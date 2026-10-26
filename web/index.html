@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Outage Desk</title>
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/vendor/maplibre-gl.css" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Outage Desk home">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M13.2 2 4.5 13.6h6.1L9.4 22l9.1-12.2h-6.2z" />
+        </svg>
+        <span>Outage Desk</span>
+      </a>
+      <ol class="lamps" id="lamps" aria-label="Data sources"></ol>
+      <div class="topbar-right">
+        <span class="demo-badge" id="demo-badge" hidden>Demo data</span>
+        <span class="updated" id="updated" aria-live="polite">Connecting…</span>
+        <button class="icon-btn" id="btn-alerts" type="button" aria-pressed="false" title="Sound and desktop alerts for your client sites">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22a2.5 2.5 0 0 0 2.4-2h-4.8a2.5 2.5 0 0 0 2.4 2zm7-6V11a7 7 0 0 0-5.5-6.8V3a1.5 1.5 0 0 0-3 0v1.2A7 7 0 0 0 5 11v5l-2 2v1h18v-1z" /></svg>
+          <span class="btn-label">Alerts off</span>
+        </button>
+        <button class="icon-btn" id="btn-tv" type="button" title="Wall-screen view">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v11H3zM8 20h8v-2H8z" /></svg>
+          <span class="btn-label">Wall view</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel" id="panel" aria-label="Outage details">
+        <section class="summary" aria-label="Summary">
+          <div class="headline">
+            <span class="headline-num" id="k-customers">–</span>
+            <span class="headline-label" id="k-label">customers without power</span>
+          </div>
+          <dl class="stats">
+            <div><dt>Unplanned outages</dt><dd id="k-unplanned">–</dd></div>
+            <div><dt>Planned work now</dt><dd id="k-planned">–</dd></div>
+            <div class="stat-clients"><dt>Clients affected</dt><dd id="k-clients">–</dd></div>
+            <div class="stat-internet"><dt>Internet alerts</dt><dd id="k-internet">–</dd></div>
+          </dl>
+        </section>
+
+        <nav class="tabs" role="tablist" aria-label="Views">
+          <button role="tab" id="tab-outages" aria-controls="view-outages" aria-selected="true">Outages <span class="count" id="c-outages"></span></button>
+          <button role="tab" id="tab-clients" aria-controls="view-clients" aria-selected="false">Clients <span class="count" id="c-clients"></span></button>
+          <button role="tab" id="tab-sources" aria-controls="view-sources" aria-selected="false">Sources</button>
+          <button role="tab" id="tab-history" aria-controls="view-history" aria-selected="false">History</button>
+        </nav>
+
+        <section class="view" id="view-outages" role="tabpanel" aria-labelledby="tab-outages">
+          <div class="toolbar">
+            <div class="segmented" role="group" aria-label="Show">
+              <button type="button" data-filter="all" aria-pressed="true">All now</button>
+              <button type="button" data-filter="unplanned" aria-pressed="false">Unplanned</button>
+              <button type="button" data-filter="planned" aria-pressed="false">Planned</button>
+              <button type="button" data-filter="upcoming" aria-pressed="false">Next 7 days</button>
+            </div>
+            <input class="search" id="search" type="search" placeholder="Filter by town, area or cause" aria-label="Filter outages" />
+          </div>
+          <ul class="list" id="outage-list"></ul>
+        </section>
+
+        <section class="view" id="view-clients" role="tabpanel" aria-labelledby="tab-clients" hidden>
+          <div class="toolbar">
+            <button type="button" class="btn primary" id="btn-add-site">Add a site</button>
+            <label class="btn" for="csv-file">Import CSV</label>
+            <input type="file" id="csv-file" accept=".csv,text/csv" hidden />
+            <a class="btn" href="/api/sites/export.csv" download>Export CSV</a>
+          </div>
+          <p class="hint" id="add-hint" hidden>Click the map where the site is. Press Esc to cancel.</p>
+          <form class="site-form" id="site-form" hidden>
+            <h3 id="site-form-title">New site</h3>
+            <label>Name<input name="name" required maxlength="120" autocomplete="off" /></label>
+            <label>Address or note for technicians<input name="address" maxlength="300" autocomplete="off" /></label>
+            <div class="form-row">
+              <label>Latitude<input name="lat" required inputmode="decimal" /></label>
+              <label>Longitude<input name="lon" required inputmode="decimal" /></label>
+              <label>Alert radius, km<input name="radiusKm" inputmode="decimal" placeholder="3" /></label>
+            </div>
+            <label>Notes<textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <p class="form-error" id="site-error" role="alert" hidden></p>
+            <div class="form-actions">
+              <button type="submit" class="btn primary" id="site-save">Save site</button>
+              <button type="button" class="btn" id="site-cancel">Cancel</button>
+              <button type="button" class="btn danger" id="site-delete" hidden>Remove site</button>
+            </div>
+          </form>
+          <ul class="list" id="site-list"></ul>
+          <div class="empty" id="sites-empty" hidden>
+            <p>No client sites yet.</p>
+            <p>Add sites one at a time from the map, or import a CSV with <code>name</code>, <code>lat</code> and <code>lon</code> columns (optional: <code>address</code>, <code>notes</code>, <code>radius_km</code>). The dashboard then flags any site inside or near an outage.</p>
+          </div>
+        </section>
+
+        <section class="view" id="view-sources" role="tabpanel" aria-labelledby="tab-sources" hidden>
+          <ul class="sources" id="source-list"></ul>
+          <div class="coverage" id="coverage"></div>
+        </section>
+
+        <section class="view" id="view-history" role="tabpanel" aria-labelledby="tab-history" hidden>
+          <h3 class="view-title">Customers without power, last 24 hours</h3>
+          <div class="chart" id="chart" role="img" aria-label="Customers without power over the last 24 hours"></div>
+          <div class="chart-legend" id="chart-legend"></div>
+          <h3 class="view-title">Recent changes</h3>
+          <ul class="events" id="events"></ul>
+        </section>
+      </aside>
+
+      <section class="map-wrap" aria-label="Map of Canada">
+        <div id="map"></div>
+        <p class="map-note" id="map-note" hidden>Street map unavailable. Showing outages on province outlines.</p>
+        <div class="legend" id="legend" aria-label="Map legend">
+          <div><i class="sw sw-unplanned"></i>Unplanned outage</div>
+          <div><i class="sw sw-planned"></i>Planned work underway</div>
+          <div><i class="sw sw-upcoming"></i>Planned, next 7 days</div>
+          <div><i class="sw sw-site"></i>Client site</div>
+          <div><i class="sw sw-internet"></i>Internet disruption</div>
+          <div><i class="sw sw-dim"></i>Power not monitored</div>
+        </div>
+        <div class="tv-feed" id="tv-feed" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <div class="toasts" id="toasts" aria-live="assertive"></div>
+    <script src="/vendor/maplibre-gl-csp.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

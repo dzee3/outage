@@ -1,0 +1,14 @@
+{
+  "name": "outage-desk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Live power and internet outage dashboard for Canada (Alberta utilities first).",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server/index.js",
+    "demo": "DEMO=1 DATA_DIR=./data-demo node server/index.js",
+    "test": "node --test test/*.test.mjs"
+  }
+}

@@ -1,0 +1,23 @@
+# docker compose up -d --build
+# Then open http://<this-computer>:8080 from any PC on the office network.
+services:
+  outage-desk:
+    build: .
+    image: outage-desk:latest
+    restart: unless-stopped
+    ports:
+      - '8080:8080'
+    environment:
+      # Optional: set an edit code so only people who know it can add or
+      # remove client sites. Viewing never needs it.
+      - EDIT_TOKEN=${EDIT_TOKEN:-}
+      # Set to "off" to hide the IODA internet layer.
+      - INTERNET=${INTERNET:-on}
+      # Set to 1 to replay sample data instead of polling the utilities.
+      - DEMO=${DEMO:-0}
+    volumes:
+      # Client sites, history and the event log live here and survive rebuilds.
+      - outage-data:/data
+
+volumes:
+  outage-data:

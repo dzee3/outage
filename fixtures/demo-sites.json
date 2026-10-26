@@ -1,0 +1,51 @@
+[
+ {
+  "name": "Jasper Lodge (example)",
+  "lat": 52.879,
+  "lon": -118.079,
+  "address": "Jasper, AB",
+  "notes": "Demo site"
+ },
+ {
+  "name": "Beltline office (example)",
+  "lat": 51.059,
+  "lon": -114.056,
+  "address": "Calgary, AB",
+  "notes": "Demo site"
+ },
+ {
+  "name": "Westbrook clinic (example)",
+  "lat": 51.044,
+  "lon": -114.143,
+  "address": "Calgary, AB",
+  "notes": "Demo site"
+ },
+ {
+  "name": "Fort McMurray depot (example)",
+  "lat": 56.7265,
+  "lon": -111.38,
+  "address": "Fort McMurray, AB",
+  "notes": "Demo site"
+ },
+ {
+  "name": "Edmonton warehouse (example)",
+  "lat": 53.5461,
+  "lon": -113.4938,
+  "address": "Edmonton, AB",
+  "notes": "Demo site"
+ },
+ {
+  "name": "Kelowna branch (example)",
+  "lat": 49.888,
+  "lon": -119.496,
+  "address": "Kelowna, BC",
+  "notes": "Demo site"
+ },
+ {
+  "name": "Halifax office (example)",
+  "lat": 44.6488,
+  "lon": -63.5752,
+  "address": "Halifax, NS",
+  "notes": "Demo site"
+ }
+]
