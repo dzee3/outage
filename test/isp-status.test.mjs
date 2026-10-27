@@ -54,16 +54,32 @@ const TELUS = {
   plannedRegionalOutages: [],
 };
 
-test('Telus: internet outages with cells and radius', () => {
+test('Telus: every service kept, drawn as circles, only Internet ones alert', () => {
   const n = parseTelus(TELUS, NOW);
-  assert.deepEqual(n.map((x) => x.id), ['telus:ok1', 'telus:cal', 'telus:pl']);
-  assert.equal(n[0].cells.length, 2, 'the far-off Edmonton cell is dropped');
-  assert.equal(matchNotice(n[0], { lat: 50.7245, lon: -113.963 }), 'area');
-  assert.equal(matchNotice(n[0], { lat: 50.70, lon: -113.99, city: 'Okotoks' }), 'city');
-  assert.equal(matchNotice(n[1], { lat: 51.045, lon: -114.07 }), 'area');
+  assert.deepEqual(n.map((x) => x.id), ['telus:ok1', 'telus:ph', 'telus:cal', 'telus:pl']);
+  const [ok, ph, cal] = n;
+  assert.equal(ph.internet, false, 'Home Phone only');
+  assert.equal(ok.internet, true);
+  // Two Okotoks cells form one circle; the stray Edmonton cell becomes its own.
+  assert.equal(ok.circles.length, 2);
+  assert.equal(matchNotice(ok, { lat: 50.7245, lon: -113.963 }), 'area');
+  assert.equal(matchNotice(ok, { lat: 50.70, lon: -113.99, city: 'Okotoks' }), 'city');
+  assert.equal(matchNotice(cal, { lat: 51.045, lon: -114.07 }), 'area');
   const s = ispStatusFor({ isp: 'Telus', lat: 51.0697, lon: -114.0175 }, n, { telus: { status: 'ok' } });
   assert.equal(s.state, 'planned'); // starts 3 am ET, after NOW
+  const phone = ispStatusFor({ isp: 'Telus', lat: 55.3, lon: -115.3 }, n, { telus: { status: 'ok' } });
+  assert.equal(phone.state, 'nearby', 'a phone-only notice at the address is shown but does not alert');
   assert.equal(parseTelus({}, NOW), null);
+  const qc = parseTelus({ outages: [{ _id: 'q', province: 'QC', impactedServices: ['Mobile - Data'], outageCenter: { lat: 46.8, lon: -71.2 } }] }, NOW);
+  assert.equal(qc.length, 0, 'Quebec is not covered');
+});
+
+test('Telus multi-community notice: one circle per cluster of cells', () => {
+  const coords = [[50.67, -120.33], [50.671, -120.331], [51.0, -121.0], [51.002, -121.001]];
+  const [n] = parseTelus({ outages: [{ _id: 'bc', impactedAreaText: 'Failure of multiple wireline services', province: 'BC', impactedServices: ['Internet'], outageAreaRadius: 5, outageCenter: { lat: 51.38, lon: -121.2 }, polygonInfo: JSON.stringify({ coords, length: 0.002, height: 0.0012 }) }] }, NOW);
+  assert.equal(n.circles.length, 2);
+  assert.ok(n.circles.every((c) => c.km >= 5));
+  assert.equal(matchNotice(n, { lat: 50.68, lon: -120.34 }), 'area');
 });
 
 test('TekSavvy KML and SaskTel page', () => {

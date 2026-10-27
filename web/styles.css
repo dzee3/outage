@@ -360,3 +360,8 @@ body.tv .tv-feed {
 .isp-line[data-state='planned'] { color: #ffd27a; }
 .isp-line[data-state='clear'] { color: #8fe6bd; }
 .isp-line[data-state='nearby'], .isp-line[data-state='unknown'], .isp-line[data-state='manual'] { color: var(--muted); }
+
+.sw.phone { border-radius: 50%; background: rgba(143, 134, 184, 0.35); border: 1px solid #8f86b8; }
+[data-kind='internet'] > .item-bar { background: var(--internet); box-shadow: 0 0 10px var(--internet); }
+.segmented button { padding: 7px 4px; font-size: 14px; }
+[data-kind='phone'] > .item-bar { background: #8f86b8; }

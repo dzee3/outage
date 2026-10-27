@@ -83,7 +83,34 @@ const htmlToLines = (html) =>
 
 // ---------------------------------------------------------------- Telus ----
 
-/** Telus outagesOverview JSON → notices (Internet-affecting only). */
+const COVERED = new Set(['BC', 'AB', 'SK', 'MB', 'ON', 'NB', 'NS', 'PE', 'NL']);
+export const internetAffected = (services) => !services?.length || services.some((x) => /internet/i.test(x));
+
+/**
+ * Group a notice's affected cells into circles, the way Telus's own map
+ * shows them: cells within ~3 km of each other form one circle, sized to
+ * reach every cell plus the notice's own radius.
+ */
+export function cellCircles(points, minKm = 0.75) {
+  const clusters = [];
+  for (const p of points) {
+    const c = clusters.find((k) => distanceKm(k.center, p) <= 3);
+    if (c) {
+      c.members.push(p);
+      c.center = {
+        lat: c.members.reduce((a, m) => a + m.lat, 0) / c.members.length,
+        lon: c.members.reduce((a, m) => a + m.lon, 0) / c.members.length,
+      };
+    } else clusters.push({ center: { ...p }, members: [p] });
+  }
+  return clusters.map((c) => ({
+    lat: c.center.lat,
+    lon: c.center.lon,
+    km: Math.round(Math.max(minKm, ...c.members.map((m) => distanceKm(c.center, m) + 0.3)) * 100) / 100,
+  }));
+}
+
+/** Telus outagesOverview JSON → notices (every service: Internet, TV, phone, mobile). */
 export function parseTelus(json, nowMs) {
   if (!Array.isArray(json?.outages)) return null;
   const all = [
@@ -95,8 +122,8 @@ export function parseTelus(json, nowMs) {
   const notices = [];
   for (const [o, kind] of all) {
     if (!o || o.isResolved || o.isCompleted) continue;
+    if (o.province && !COVERED.has(o.province)) continue;
     const services = Array.isArray(o.impactedServices) ? o.impactedServices : [];
-    if (!services.some((s) => /internet/i.test(s))) continue;
     let info = {};
     try {
       info = typeof o.polygonInfo === 'string' ? JSON.parse(o.polygonInfo) : o.polygonInfo || {};
@@ -106,28 +133,34 @@ export function parseTelus(json, nowMs) {
     const w = Number(info.length) || 0.002;
     const hgt = Number(info.height) || 0.0012;
     const center = o.outageCenter && Number.isFinite(o.outageCenter.lat) ? { lat: o.outageCenter.lat, lon: o.outageCenter.lon } : null;
-    // Each coord is the corner of a small affected cell; stray far-off cells are dropped.
-    const cells = (o.activatePolygon !== false && Array.isArray(info.coords) ? info.coords : [])
+    const rKm = Math.min(Math.max(Number(o.outageAreaRadius) || 0.5, 0.5), 25);
+    // Each coord is the corner of a small affected cell (lat, lon).
+    const cellPts = (Array.isArray(info.coords) ? info.coords : [])
       .filter((c) => Array.isArray(c) && Number.isFinite(c[0]) && Number.isFinite(c[1]))
-      .filter((c) => !center || distanceKm(center, { lat: c[0], lon: c[1] }) < 60)
-      .map(([lat, lon]) => [lat, lon, w, hgt]);
+      .map(([lat, lon]) => ({ lat: lat + hgt / 2, lon: lon + w / 2 }));
+    let circles = cellCircles(cellPts, Math.max(0.75, rKm));
+    for (const pin of Array.isArray(info.mobilityPins) ? info.mobilityPins : [])
+      if (Number.isFinite(pin?.lt) && Number.isFinite(pin?.lg)) circles.push({ lat: pin.lt, lon: pin.lg, km: Math.min(Number(pin.r) || rKm, 30) });
+    if (!circles.length && center) circles = [{ lat: center.lat, lon: center.lon, km: Math.max(0.75, rKm) }];
     const startMs = Date.parse(o.startTime || '') || null;
     if (kind === 'planned' && startMs && startMs - nowMs > 7 * 86400_000) continue;
     const text = String(o.impactedAreaText || '').trim();
-    const city = /^([^,]+),\s*[A-Za-z ]+$/.exec(text)?.[1] || null;
+    const city = /^([^,(]+?)\s*(?:\([^)]*\))?,\s*[A-Za-z ]+$/.exec(text)?.[1] || null;
     notices.push({
       id: `telus:${o._id || o.acr || text}`,
       provider: 'telus',
       kind,
+      internet: internetAffected(services),
       title: text || 'Telus outage',
       detail: [o.cause?.cause, o.estimatedRepairDate ? `estimated repair ${o.estimatedRepairDate}${o.estimatedRepairTime ? ` (${o.estimatedRepairTime})` : ''}` : null].filter(Boolean).join('; ') || null,
       services,
       province: o.province || null,
       city,
       areas: [],
-      point: center,
-      radiusKm: !cells.length && Number(o.outageAreaRadius) > 0 && city ? Math.min(Number(o.outageAreaRadius), 25) : null,
-      cells,
+      point: center || (circles[0] ? { lat: circles[0].lat, lon: circles[0].lon } : null),
+      radiusKm: null,
+      circles,
+      cells: [],
       startMs,
       endMs: kind === 'planned' && o.estimatedRepairDate ? Date.parse(`${o.estimatedRepairDate}T23:59:00-06:00`) : null,
       updated: o.lastUpdate || null,
@@ -212,6 +245,7 @@ export function parseRogers(html, province, nowMs) {
       id: `rogers:${province}:${fold(n.title)}`,
       provider: 'rogers',
       kind: n.kind,
+      internet: true,
       title: n.title,
       detail: [n.fields.cause ? `Cause: ${n.fields.cause}` : null, status || null].filter(Boolean).join('. ') || null,
       services: services ? services.split(/\s*,\s*/) : [],
@@ -265,6 +299,7 @@ export function parseKmlNotices(kml, provider, link) {
       id: `${provider}:${fold(name)}:${point.lat.toFixed(3)},${point.lon.toFixed(3)}`,
       provider,
       kind: /maint|planned|scheduled/i.test(`${name} ${desc}`) ? 'planned' : 'outage',
+      internet: true,
       title: name || 'Reported outage',
       detail: desc.slice(0, 400) || null,
       services: [],
@@ -300,6 +335,7 @@ export function parseSaskTel(html) {
     out.push({
       id: `sasktel:${fold(line).slice(0, 80)}`,
       provider: 'sasktel',
+      internet: !/\b(home phone|landline|mobile|wireless)\b/i.test(line) || /internet/i.test(line),
       kind: /planned|maintenance|scheduled/i.test(line) ? 'planned' : 'outage',
       title: line.slice(0, 200),
       detail: null,
@@ -337,6 +373,7 @@ export function matchNotice(notice, site) {
   if (notice.cells?.length) {
     if (notice.cells.some((c) => inCell(p, c))) return 'area';
   }
+  if (notice.circles?.some((c) => distanceKm(p, c) <= c.km)) return 'area';
   if (notice.polygons?.length && pointInPolygons(p, notice.polygons)) return 'area';
   if (notice.point && notice.radiusKm && distanceKm(p, notice.point) <= notice.radiusKm) return 'area';
   for (const ap of notice.areaPoints || []) if (distanceKm(p, ap) <= AREA_MATCH_KM) return 'area';
@@ -349,7 +386,7 @@ export function matchNotice(notice, site) {
     if (notice.city && fold(notice.city) === city) return 'city';
     if (notice.text && ` ${notice.text} `.includes(` ${city} `)) return 'city';
   }
-  if (notice.cells?.length && notice.point && distanceKm(p, notice.point) <= 15 && !notice.city) return 'city';
+  if ((notice.cells?.length || notice.circles?.length) && notice.point && distanceKm(p, notice.point) <= 15 && !notice.city) return 'city';
   return null;
 }
 
@@ -364,14 +401,17 @@ export function ispStatusFor(site, notices, health) {
   for (const n of notices) {
     if (n.provider !== key) continue;
     const match = matchNotice(n, site);
-    if (match) hits.push({ id: n.id, kind: n.kind, match, title: n.title, detail: n.detail, services: n.services, startMs: n.startMs, endMs: n.endMs, link: n.link });
+    if (match) hits.push({ id: n.id, kind: n.kind, match, internet: n.internet !== false, title: n.title, detail: n.detail, services: n.services, startMs: n.startMs, endMs: n.endMs, link: n.link });
   }
-  hits.sort((a, b) => (a.match === 'area' ? 0 : 1) - (b.match === 'area' ? 0 : 1) || (a.kind === 'outage' ? 0 : 1) - (b.kind === 'outage' ? 0 : 1));
+  hits.sort((a, b) => Number(b.internet) - Number(a.internet) || (a.match === 'area' ? 0 : 1) - (b.match === 'area' ? 0 : 1) || (a.kind === 'outage' ? 0 : 1) - (b.kind === 'outage' ? 0 : 1));
   const nowMs = Date.now();
+  // Only notices that affect Internet raise the client; phone/TV/mobile-only
+  // notices at the address are shown, not alerted.
+  const net = hits.filter((x) => x.internet && x.match === 'area');
   let state = 'clear';
-  if (hits.some((x) => x.match === 'area' && x.kind === 'outage')) state = 'out';
-  else if (hits.some((x) => x.match === 'area' && x.kind === 'planned' && (!x.startMs || x.startMs <= nowMs))) state = 'out';
-  else if (hits.some((x) => x.match === 'area' && x.kind === 'planned')) state = 'planned';
+  if (net.some((x) => x.kind === 'outage')) state = 'out';
+  else if (net.some((x) => x.kind === 'planned' && (!x.startMs || x.startMs <= nowMs))) state = 'out';
+  else if (net.some((x) => x.kind === 'planned')) state = 'planned';
   else if (hits.length) state = 'nearby';
   if (h?.status === 'down') state = 'unknown';
   return { provider: key, name: page.name, supported: true, state, notices: hits.slice(0, 4), link: page.page, checkedAt: h?.lastSuccessAt || null, error: h?.error || null };
@@ -439,6 +479,7 @@ export function createIspStatus({ request, requestText, geocoder, now = () => Da
         if (pt) n.areaPoints.push(pt);
       }
       if (!n.point && n.areaPoints.length) n.point = n.areaPoints[0];
+      n.circles = n.areaPoints.map((p) => ({ ...p, km: AREA_MATCH_KM }));
     }
   }
 

@@ -35,7 +35,9 @@ Internet:
   These are national network signals, so they can't tell which town is affected.
 - **Provider outage pages, per client address:** each client's ISP is checked
   against that provider's own public outage page every 5 minutes:
-  - **Telus:** national feed with mapped outage cells, matched by location
+  - **Telus:** national feed, every notice it publishes (Internet, TV, Home
+    Phone, 911, mobility), drawn as the affected area and matched by location.
+    Only notices that list Internet mark a client down; others show as nearby.
   - **Rogers / Shaw:** per-province notices naming the city and
     neighbourhoods, matched by name and by distance to the neighbourhood
   - **TekSavvy:** its public outage map, matched by location
@@ -44,6 +46,11 @@ Internet:
   Bell checks addresses behind a CAPTCHA, which the dashboard does not get
   around, and Eastlink, Cogeco and Xplore publish no public map. Clients with
   those providers rely on the network signals instead.
+
+  Every provider notice appears on the map (violet for Internet, grey-violet
+  for phone/TV only, amber for planned work) and under **Outages → Internet**.
+  The "internet outages" count adds unplanned provider notices that affect
+  Internet to the IODA network drops.
 - **Who serves a spot:** the federal [National Broadband Map](https://ised-isde.canada.ca/app/scr/sittibc/web/bbmap?lang=eng#!/map)
   (ISED), in ~25 km² hexagons.
 

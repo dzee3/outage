@@ -29,7 +29,7 @@
         <b class="cyan" id="k-clients">–</b><span>clients hit</span>
       </button>
       <div class="chip kpi as-button" id="kpi-net" role="button" tabindex="0" title="Internet: provinces and provider networks showing a drop now (IODA). Click for details.">
-        <b class="violet" id="k-internet">–</b><span>internet alerts</span>
+        <b class="violet" id="k-internet">–</b><span>internet outages</span>
       </div>
       <div class="hud-top-right">
         <span class="chip demo" id="demo-badge" hidden>Demo data</span>
@@ -85,6 +85,7 @@
             <button type="button" data-filter="unplanned" aria-pressed="false">Unplanned</button>
             <button type="button" data-filter="planned" aria-pressed="false">Planned</button>
             <button type="button" data-filter="upcoming" aria-pressed="false">Next 7 days</button>
+            <button type="button" data-filter="internet" aria-pressed="false">Internet</button>
           </div>
           <div class="row-2">
             <select id="prov-filter" aria-label="Province">
@@ -203,6 +204,7 @@
         <span><i class="sw upcoming"></i>next 7 days</span>
         <span><i class="sw site"></i>client</span>
         <span><i class="sw net"></i>internet outage</span>
+        <span><i class="sw phone"></i>phone/TV only</span>
       </div>
     </div>
     <div class="isp-card" id="isp-card" hidden aria-live="polite"></div>
