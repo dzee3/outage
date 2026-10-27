@@ -1262,17 +1262,23 @@ $('btn-alerts').addEventListener('click', async () => {
 function attachSuggest(input, listEl, onPick) {
   let seq = 0;
   let results = [];
+  let resultsFor = null; // the text `results` were found for
   const close = () => {
     listEl.hidden = true;
+  };
+  const search = async (q) => {
+    const r = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`).then((x) => x.json());
+    return r;
   };
   const run = debounce(async () => {
     const q = input.value.trim();
     if (q.length < 3) return close();
     const my = ++seq;
     try {
-      const r = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`).then((x) => x.json());
+      const r = await search(q);
       if (my !== seq) return;
       results = r.results || [];
+      resultsFor = q;
       listEl.textContent = '';
       if (!results.length) listEl.append(h('li', {}, h('button', { type: 'button', disabled: true, text: r.error || 'No matches in Canada' })));
       for (const p of results)
@@ -1285,13 +1291,34 @@ function attachSuggest(input, listEl, onPick) {
       close();
     }
   }, 450);
-  input.addEventListener('input', run);
-  input.addEventListener('keydown', (e) => {
+  input.addEventListener('input', () => {
+    // Older matches belong to older text; never let Enter pick one of them.
+    results = [];
+    resultsFor = null;
+    run();
+  });
+  input.addEventListener('keydown', async (e) => {
     if (e.key === 'Escape') close();
-    if (e.key === 'Enter' && results[0] && !listEl.hidden) {
-      e.preventDefault();
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const q = input.value.trim();
+    if (q.length < 3) return;
+    if (resultsFor === q && results[0]) {
       close();
-      onPick(results[0]);
+      return onPick(results[0]);
+    }
+    // Typed or pasted faster than the suggestions arrived: search now.
+    const my = ++seq;
+    try {
+      const r = await search(q);
+      if (my !== seq || input.value.trim() !== q) return;
+      results = r.results || [];
+      resultsFor = q;
+      close();
+      if (results[0]) onPick(results[0]);
+      else toast('No matches in Canada', q, 'bad');
+    } catch {
+      close();
     }
   });
   input.addEventListener('blur', () => setTimeout(close, 200));
@@ -1408,10 +1435,18 @@ async function placeDraft(lat, lon, place = null, site = null) {
     addr.dataset.auto = '1';
   }
   if (!site && !form.elements.name.value) form.elements.name.focus();
-  renderLookup(info, site);
+  renderLookup(info, site, place);
 }
 
-function renderLookup(info, site) {
+const KIND_NAMES = { road: 'the street', postcode: 'the postal code', town: 'the town', city: 'the city', village: 'the village', suburb: 'the neighbourhood', neighbourhood: 'the neighbourhood', municipality: 'the municipality', county: 'the county' };
+
+/** Other clients pinned within `m` metres of a point. */
+function sitesNear(lat, lon, exceptId, m = 30) {
+  const k = Math.cos((lat * Math.PI) / 180);
+  return (state.snap?.sites || []).filter((s) => s.id !== exceptId && Math.hypot((s.lat - lat) * 111_320, (s.lon - lon) * 111_320 * k) < m);
+}
+
+function renderLookup(info, site, place = null) {
   const box = $('lookup');
   box.textContent = '';
   const fe = $('site-form').elements;
@@ -1420,6 +1455,13 @@ function renderLookup(info, site) {
   const province = info.provinceName || info.province || 'outside the covered provinces';
   box.append(h('div', { class: 'row' }, h('b', { text: 'Where' }), h('span', { text: `${info.address?.city ? `${info.address.city}, ` : ''}${province}` })));
   if (info.province && !info.covered) box.append(h('div', { class: 'row' }, h('b', { text: 'Note' }), h('span', { text: 'Power outages are not monitored in this province.' })));
+  if (place && !place.precise)
+    box.append(h('div', { class: 'row warn' }, h('b', { text: 'Check' }), h('span', { text: `The search only matched ${KIND_NAMES[place.kind] || 'an area'}, not the building. Drag the pin onto the site so outage distances are right.` })));
+  const lat = Number($('site-form').elements.lat.value);
+  const lon = Number($('site-form').elements.lon.value);
+  const twins = sitesNear(lat, lon, site?.id);
+  if (twins.length)
+    box.append(h('div', { class: 'row warn' }, h('b', { text: 'Check' }), h('span', { text: `Same spot as ${twins.map((t) => t.name).join(', ')}. Drag the pin if this client is somewhere else.` })));
 
   // Power utility: the lookup's answer first, the province's others after.
   const sel = $('f-utility');
@@ -1497,6 +1539,8 @@ $('site-cancel').addEventListener('click', closeSitePanel);
 $('site-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = e.target.elements;
+  const twins = sitesNear(Number(f.lat.value), Number(f.lon.value), state.editingSiteId);
+  if (twins.length && !window.confirm(`${f.name.value || 'This client'} is pinned at the same spot as ${twins.map((t) => t.name).join(', ')}. Save it there anyway?`)) return;
   const ispPick = f.ispPick.value;
   const body = JSON.stringify({
     name: f.name.value,

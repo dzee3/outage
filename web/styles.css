@@ -262,6 +262,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--edge-strong); ou
 .lookup:empty { display: none; }
 .lookup .row { display: flex; gap: 10px; align-items: baseline; }
 .lookup .row b { width: 72px; flex: none; font: 700 12px var(--hud); letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+.lookup .row.warn span { color: var(--planned); }
 .conf { font: 600 11px var(--hud); letter-spacing: 0.08em; text-transform: uppercase; padding: 0 6px; border-radius: 4px; border: 1px solid currentColor; margin-left: 6px; }
 .conf.boundary, .conf.chosen { color: var(--ok); }
 .conf.city, .conf.province { color: var(--cyan); }
