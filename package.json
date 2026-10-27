@@ -2,7 +2,7 @@
   "name": "outage-desk",
   "version": "1.0.0",
   "private": true,
-  "description": "Live power and internet outage dashboard for Canada (Alberta utilities first).",
+  "description": "Live power and internet outage dashboard for client sites across Canada (BC to NL, excluding Quebec).",
   "type": "module",
   "license": "UNLICENSED",
   "engines": { "node": ">=22" },

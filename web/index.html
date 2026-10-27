@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Outage Desk</title>
     <meta name="color-scheme" content="dark" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
@@ -10,123 +10,200 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <a class="brand" href="/" aria-label="Outage Desk home">
-        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M13.2 2 4.5 13.6h6.1L9.4 22l9.1-12.2h-6.2z" />
-        </svg>
+    <div id="map" aria-label="Map of Canada with outages and client sites"></div>
+    <p class="map-note" id="map-note" hidden>Street map unavailable. Showing outages on province outlines.</p>
+
+    <!-- Top HUD -->
+    <header class="hud-top">
+      <a class="chip brand" href="/" aria-label="Outage Desk home">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.2 2 4.5 13.6h6.1L9.4 22l9.1-12.2h-6.2z" /></svg>
         <span>Outage Desk</span>
       </a>
-      <ol class="lamps" id="lamps" aria-label="Data sources"></ol>
-      <div class="topbar-right">
-        <span class="demo-badge" id="demo-badge" hidden>Demo data</span>
-        <span class="updated" id="updated" aria-live="polite">Connecting…</span>
-        <button class="icon-btn" id="btn-alerts" type="button" aria-pressed="false" title="Sound and desktop alerts for your client sites">
+      <div class="chip kpi" id="kpi-out" title="Customers without power in the monitored provinces">
+        <b id="k-customers">–</b><span id="k-label">customers out</span>
+      </div>
+      <div class="chip kpi" title="Unplanned outages and planned work underway">
+        <b id="k-unplanned">–</b><span>unplanned</span><i class="dot-sep"></i><b class="amber" id="k-planned">–</b><span>planned</span>
+      </div>
+      <button class="chip kpi as-button" id="kpi-clients" type="button" title="Client sites affected: open the client list">
+        <b class="cyan" id="k-clients">–</b><span>clients hit</span>
+      </button>
+      <div class="chip kpi" id="kpi-net" title="Internet: provinces and provider networks showing a drop (IODA)">
+        <b class="violet" id="k-internet">–</b><span>internet alerts</span>
+      </div>
+      <div class="hud-top-right">
+        <span class="chip demo" id="demo-badge" hidden>Demo data</span>
+        <button class="chip feeds as-button" id="btn-feeds" type="button" title="Data sources: open the list">
+          <span class="lamp-dot" id="feeds-dot" aria-hidden="true"></span><span id="feeds-text">Connecting…</span><span class="updated" id="updated" aria-live="polite"></span>
+        </button>
+        <button class="chip as-button" id="btn-alerts" type="button" aria-pressed="false" title="Sound and desktop alerts for your client sites">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22a2.5 2.5 0 0 0 2.4-2h-4.8a2.5 2.5 0 0 0 2.4 2zm7-6V11a7 7 0 0 0-5.5-6.8V3a1.5 1.5 0 0 0-3 0v1.2A7 7 0 0 0 5 11v5l-2 2v1h18v-1z" /></svg>
           <span class="btn-label">Alerts off</span>
         </button>
-        <button class="icon-btn" id="btn-tv" type="button" title="Wall-screen view">
+        <button class="chip as-button" id="btn-tv" type="button" title="Wall-screen view">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v11H3zM8 20h8v-2H8z" /></svg>
           <span class="btn-label">Wall view</span>
         </button>
       </div>
     </header>
 
-    <main class="layout">
-      <aside class="panel" id="panel" aria-label="Outage details">
-        <section class="summary" aria-label="Summary">
-          <div class="headline">
-            <span class="headline-num" id="k-customers">–</span>
-            <span class="headline-label" id="k-label">customers without power</span>
+    <!-- Left dock -->
+    <nav class="dock" aria-label="Panels">
+      <button type="button" class="dock-btn" data-panel="outages" aria-pressed="false" title="Outages">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.2 2 4.5 13.6h6.1L9.4 22l9.1-12.2h-6.2z" /></svg>
+        <span>Outages</span><em class="badge" id="c-outages"></em>
+      </button>
+      <button type="button" class="dock-btn" data-panel="clients" aria-pressed="false" title="Client sites">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 10l8 12 8-12z" /></svg>
+        <span>Clients</span><em class="badge hot" id="c-clients"></em>
+      </button>
+      <button type="button" class="dock-btn" data-panel="layers" aria-pressed="false" title="Map layers and overlays">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8zm-7.6 8.2L12 15l7.6-3.8L22 12.4 12 17.4 2 12.4zm0 4.6L12 19.6l7.6-3.8L22 17l-10 5-10-5z" /></svg>
+        <span>Layers</span>
+      </button>
+      <button type="button" class="dock-btn" data-panel="sources" aria-pressed="false" title="Data sources and coverage">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v4H4zm0 6h16v4H4zm0 6h16v4H4z" /></svg>
+        <span>Sources</span>
+      </button>
+      <button type="button" class="dock-btn" data-panel="history" aria-pressed="false" title="Last 24 hours">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20h18v-2H5V4H3zm4-4 4-5 3 3 5-7 1.6 1.2L14.3 17l-3-3-2.7 3.4z" /></svg>
+        <span>History</span>
+      </button>
+    </nav>
+
+    <!-- Left panel (one view at a time) -->
+    <aside class="panel" id="panel" hidden aria-label="Details">
+      <header class="panel-head">
+        <h2 id="panel-title">Outages</h2>
+        <button type="button" class="icon-x" id="panel-close" aria-label="Close panel">×</button>
+      </header>
+
+      <section class="view" id="view-outages" hidden>
+        <div class="toolbar">
+          <div class="segmented" role="group" aria-label="Show">
+            <button type="button" data-filter="all" aria-pressed="true">Now</button>
+            <button type="button" data-filter="unplanned" aria-pressed="false">Unplanned</button>
+            <button type="button" data-filter="planned" aria-pressed="false">Planned</button>
+            <button type="button" data-filter="upcoming" aria-pressed="false">Next 7 days</button>
           </div>
-          <dl class="stats">
-            <div><dt>Unplanned outages</dt><dd id="k-unplanned">–</dd></div>
-            <div><dt>Planned work now</dt><dd id="k-planned">–</dd></div>
-            <div class="stat-clients"><dt>Clients affected</dt><dd id="k-clients">–</dd></div>
-            <div class="stat-internet"><dt>Internet alerts</dt><dd id="k-internet">–</dd></div>
-          </dl>
-        </section>
-
-        <nav class="tabs" role="tablist" aria-label="Views">
-          <button role="tab" id="tab-outages" aria-controls="view-outages" aria-selected="true">Outages <span class="count" id="c-outages"></span></button>
-          <button role="tab" id="tab-clients" aria-controls="view-clients" aria-selected="false">Clients <span class="count" id="c-clients"></span></button>
-          <button role="tab" id="tab-sources" aria-controls="view-sources" aria-selected="false">Sources</button>
-          <button role="tab" id="tab-history" aria-controls="view-history" aria-selected="false">History</button>
-        </nav>
-
-        <section class="view" id="view-outages" role="tabpanel" aria-labelledby="tab-outages">
-          <div class="toolbar">
-            <div class="segmented" role="group" aria-label="Show">
-              <button type="button" data-filter="all" aria-pressed="true">All now</button>
-              <button type="button" data-filter="unplanned" aria-pressed="false">Unplanned</button>
-              <button type="button" data-filter="planned" aria-pressed="false">Planned</button>
-              <button type="button" data-filter="upcoming" aria-pressed="false">Next 7 days</button>
-            </div>
-            <input class="search" id="search" type="search" placeholder="Filter by town, area or cause" aria-label="Filter outages" />
+          <div class="row-2">
+            <select id="prov-filter" aria-label="Province">
+              <option value="">All provinces</option>
+            </select>
+            <input class="search" id="search" type="search" placeholder="Filter by town, cause, utility" aria-label="Filter outages" />
           </div>
-          <ul class="list" id="outage-list"></ul>
-        </section>
-
-        <section class="view" id="view-clients" role="tabpanel" aria-labelledby="tab-clients" hidden>
-          <div class="toolbar">
-            <button type="button" class="btn primary" id="btn-add-site">Add a site</button>
-            <label class="btn" for="csv-file">Import CSV</label>
-            <input type="file" id="csv-file" accept=".csv,text/csv" hidden />
-            <a class="btn" href="/api/sites/export.csv" download>Export CSV</a>
-          </div>
-          <p class="hint" id="add-hint" hidden>Click the map where the site is. Press Esc to cancel.</p>
-          <form class="site-form" id="site-form" hidden>
-            <h3 id="site-form-title">New site</h3>
-            <label>Name<input name="name" required maxlength="120" autocomplete="off" /></label>
-            <label>Address or note for technicians<input name="address" maxlength="300" autocomplete="off" /></label>
-            <div class="form-row">
-              <label>Latitude<input name="lat" required inputmode="decimal" /></label>
-              <label>Longitude<input name="lon" required inputmode="decimal" /></label>
-              <label>Alert radius, km<input name="radiusKm" inputmode="decimal" placeholder="3" /></label>
-            </div>
-            <label>Notes<textarea name="notes" rows="2" maxlength="500"></textarea></label>
-            <p class="form-error" id="site-error" role="alert" hidden></p>
-            <div class="form-actions">
-              <button type="submit" class="btn primary" id="site-save">Save site</button>
-              <button type="button" class="btn" id="site-cancel">Cancel</button>
-              <button type="button" class="btn danger" id="site-delete" hidden>Remove site</button>
-            </div>
-          </form>
-          <ul class="list" id="site-list"></ul>
-          <div class="empty" id="sites-empty" hidden>
-            <p>No client sites yet.</p>
-            <p>Add sites one at a time from the map, or import a CSV with <code>name</code>, <code>lat</code> and <code>lon</code> columns (optional: <code>address</code>, <code>notes</code>, <code>radius_km</code>). The dashboard then flags any site inside or near an outage.</p>
-          </div>
-        </section>
-
-        <section class="view" id="view-sources" role="tabpanel" aria-labelledby="tab-sources" hidden>
-          <ul class="sources" id="source-list"></ul>
-          <div class="coverage" id="coverage"></div>
-        </section>
-
-        <section class="view" id="view-history" role="tabpanel" aria-labelledby="tab-history" hidden>
-          <h3 class="view-title">Customers without power, last 24 hours</h3>
-          <div class="chart" id="chart" role="img" aria-label="Customers without power over the last 24 hours"></div>
-          <div class="chart-legend" id="chart-legend"></div>
-          <h3 class="view-title">Recent changes</h3>
-          <ul class="events" id="events"></ul>
-        </section>
-      </aside>
-
-      <section class="map-wrap" aria-label="Map of Canada">
-        <div id="map"></div>
-        <p class="map-note" id="map-note" hidden>Street map unavailable. Showing outages on province outlines.</p>
-        <div class="legend" id="legend" aria-label="Map legend">
-          <div><i class="sw sw-unplanned"></i>Unplanned outage</div>
-          <div><i class="sw sw-planned"></i>Planned work underway</div>
-          <div><i class="sw sw-upcoming"></i>Planned, next 7 days</div>
-          <div><i class="sw sw-site"></i>Client site</div>
-          <div><i class="sw sw-internet"></i>Internet disruption</div>
-          <div><i class="sw sw-dim"></i>Power not monitored</div>
         </div>
-        <div class="tv-feed" id="tv-feed" aria-live="polite"></div>
+        <ul class="list" id="outage-list"></ul>
       </section>
-    </main>
+
+      <section class="view" id="view-clients" hidden>
+        <div class="toolbar">
+          <button type="button" class="btn primary" id="btn-add-site">+ Add client</button>
+          <label class="btn" for="csv-file">Import CSV</label>
+          <input type="file" id="csv-file" accept=".csv,text/csv" hidden />
+          <a class="btn" href="/api/sites/export.csv" download>Export</a>
+        </div>
+        <ul class="list" id="site-list"></ul>
+        <div class="empty" id="sites-empty" hidden>
+          <p>No client sites yet.</p>
+          <p>Use <b>+ Add client</b> to search an address or drop a pin. Or import a CSV with <code>name</code>, <code>lat</code>, <code>lon</code> (optional: <code>address</code>, <code>notes</code>, <code>radius_km</code>, <code>utility</code>, <code>isp</code>).</p>
+        </div>
+      </section>
+
+      <section class="view" id="view-layers" hidden>
+        <div class="layer-group">
+          <h3>Power</h3>
+          <label class="toggle"><input type="checkbox" data-layer="outages" checked /><span>Outage points and areas</span></label>
+          <label class="toggle"><input type="checkbox" data-layer="territories" /><span>Utility service areas</span></label>
+          <p class="hint">Service areas come from published boundaries (Ontario's distributor map, FortisBC, Saskatoon L&amp;P, Newfoundland Power). Elsewhere the province's main utility is named on the map.</p>
+        </div>
+        <div class="layer-group">
+          <h3>Internet</h3>
+          <label class="toggle"><input type="checkbox" data-layer="internet" checked /><span>Province-wide drops (IODA)</span></label>
+          <label class="toggle"><input type="checkbox" data-layer="isp" /><span>Internet providers in view</span></label>
+          <p class="hint">Providers come from the federal National Broadband Map, in ~25 km² hexagons. Zoom in to a city or region to list them.</p>
+        </div>
+        <div class="layer-group">
+          <h3>Clients</h3>
+          <label class="toggle"><input type="checkbox" data-layer="clients" checked /><span>Client sites</span></label>
+          <label class="toggle"><input type="checkbox" data-layer="labels" checked /><span>Client name labels</span></label>
+        </div>
+      </section>
+
+      <section class="view" id="view-sources" hidden>
+        <ul class="sources" id="source-list"></ul>
+        <div class="coverage" id="coverage"></div>
+      </section>
+
+      <section class="view" id="view-history" hidden>
+        <h3 class="view-title">Customers without power, last 24 hours</h3>
+        <div class="chart" id="chart" role="img" aria-label="Customers without power over the last 24 hours"></div>
+        <div class="chart-legend" id="chart-legend"></div>
+        <h3 class="view-title">Recent changes</h3>
+        <ul class="events" id="events"></ul>
+      </section>
+    </aside>
+
+    <!-- Right panel: add / edit a client -->
+    <aside class="panel right" id="site-panel" hidden aria-label="Client site">
+      <header class="panel-head">
+        <h2 id="site-form-title">New client</h2>
+        <button type="button" class="icon-x" id="site-cancel" aria-label="Close">×</button>
+      </header>
+      <div class="place-search">
+        <input id="addr-search" type="search" placeholder="Search an address or place…" autocomplete="off" aria-label="Search an address" />
+        <ul class="suggest" id="addr-suggest" hidden></ul>
+        <p class="hint" id="pick-hint">…or click the map to drop a pin. Drag the pin to adjust.</p>
+      </div>
+      <form class="site-form" id="site-form" hidden>
+        <div class="lookup" id="lookup" aria-live="polite"></div>
+        <label>Name<input name="name" required maxlength="120" autocomplete="off" placeholder="e.g. Jasper Lodge" /></label>
+        <label>Street address<input name="address" maxlength="300" autocomplete="off" /></label>
+        <label>Power utility
+          <select name="utility" id="f-utility"></select>
+        </label>
+        <p class="hint" id="utility-hint"></p>
+        <label>Internet provider
+          <select name="ispPick" id="f-isp"></select>
+        </label>
+        <input name="isp" id="f-isp-other" maxlength="80" placeholder="Provider name" hidden />
+        <p class="hint" id="isp-hint"></p>
+        <div class="form-row">
+          <label>Alert radius, km<input name="radiusKm" inputmode="decimal" placeholder="3" /></label>
+          <label>Latitude<input name="lat" required inputmode="decimal" /></label>
+          <label>Longitude<input name="lon" required inputmode="decimal" /></label>
+        </div>
+        <label>Notes<textarea name="notes" rows="2" maxlength="500"></textarea></label>
+        <p class="form-error" id="site-error" role="alert" hidden></p>
+        <div class="form-actions">
+          <button type="submit" class="btn primary" id="site-save">Save client</button>
+          <button type="button" class="btn danger" id="site-delete" hidden>Remove</button>
+        </div>
+        <p class="attrib">Addresses © OpenStreetMap contributors (Nominatim). Providers: ISED National Broadband Map.</p>
+      </form>
+    </aside>
+
+    <!-- Bottom HUD -->
+    <div class="hud-bottom-left">
+      <div class="chip search-chip">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3a7 7 0 0 1 5.6 11.2l5.1 5.1-1.4 1.4-5.1-5.1A7 7 0 1 1 10 3zm0 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10z" /></svg>
+        <input id="go-search" type="search" placeholder="Go to a place…" autocomplete="off" aria-label="Go to a place" />
+        <ul class="suggest up" id="go-suggest" hidden></ul>
+      </div>
+      <button type="button" class="chip primary-chip as-button" id="btn-add-site-2">+ Add client</button>
+    </div>
+    <div class="hud-bottom-right">
+      <div class="chip legend" id="legend" aria-label="Map legend">
+        <span><i class="sw unplanned"></i>unplanned</span>
+        <span><i class="sw planned"></i>planned</span>
+        <span><i class="sw upcoming"></i>next 7 days</span>
+        <span><i class="sw site"></i>client</span>
+        <span><i class="sw net"></i>internet drop</span>
+      </div>
+    </div>
+    <div class="isp-card" id="isp-card" hidden aria-live="polite"></div>
+    <div class="pick-banner" id="pick-banner" hidden>Click the map where the client is · <kbd>Esc</kbd> to cancel</div>
+    <div class="tv-feed" id="tv-feed" aria-live="polite"></div>
 
     <div class="toasts" id="toasts" aria-live="assertive"></div>
     <script src="/vendor/maplibre-gl-csp.js"></script>

@@ -2,12 +2,17 @@ import http from 'node:http';
 import { readFileSync, existsSync, statSync, createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { requestJson } from './http.js';
+import { requestJson, requestRaw } from './http.js';
 import { albertaSources, ALBERTA_UNMONITORED } from './sources/alberta.js';
+import { canadaSources, CANADA_UNMONITORED } from './sources/canada.js';
 import { iodaSource } from './sources/ioda.js';
+import { createTerritory } from './territory.js';
+import { createGeocoder } from './geocode.js';
+import { createIspLookup, watchedAsns, NBM_PAGE } from './isp.js';
+import { utilityById } from './utilities.js';
 import { demoSources, demoInternet } from './demo.js';
 import { createStore, sitesFromCsv, sitesToCsv } from './store.js';
-import { createMonitor } from './monitor.js';
+import { createMonitor, provinceOf } from './monitor.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = path.join(ROOT, 'web');
@@ -26,12 +31,9 @@ const config = {
 const now = () => Date.now();
 const request = (url, options) => requestJson(url, options);
 
-const coverage = {
-  AB: {
-    name: 'Alberta',
-    sources: ['atco', 'fortis', 'enmax', 'epcor'],
-    unmonitored: ALBERTA_UNMONITORED,
-  },
+const PROVINCE_NAMES = {
+  BC: 'British Columbia', AB: 'Alberta', SK: 'Saskatchewan', MB: 'Manitoba', ON: 'Ontario',
+  NB: 'New Brunswick', NS: 'Nova Scotia', PE: 'Prince Edward Island', NL: 'Newfoundland and Labrador',
 };
 
 const store = createStore(config.dataDir, { now });
@@ -49,20 +51,61 @@ try {
   console.error(`[outages] province outlines unavailable (${error.message}); sites will show "not monitored"`);
 }
 
+const sources = config.demo
+  ? demoSources({ fixturePath: path.join(ROOT, 'fixtures/demo-alberta.json'), now })
+  : [...albertaSources({ request, now }), ...canadaSources({ request, now })];
+
+// Provinces with at least one live power feed, and what is not covered there.
+const coverage = {};
+for (const src of sources) {
+  const c = (coverage[src.province] ??= {
+    name: PROVINCE_NAMES[src.province] || src.province,
+    sources: [],
+    unmonitored: src.province === 'AB' ? ALBERTA_UNMONITORED : CANADA_UNMONITORED[src.province] || [],
+  });
+  c.sources.push(src.id);
+}
+
+const territory = createTerritory({ dataDir: config.dataDir, requestRaw, requestJson: request, now });
+const geocoder = createGeocoder({ request });
+const isp = createIspLookup({ request, dataDir: config.dataDir, now });
+
+/** Who supplies a site: the technician's choice, else the territory lookup. */
+const utilityCache = new Map();
+function utilityFor(site, province) {
+  if (site.utility) {
+    const u = utilityById(site.utility);
+    const options = province ? territory.options(province) : [];
+    const name = u?.name || options.find((o) => o.id === site.utility)?.name || site.utility;
+    return { id: site.utility, name, monitored: Boolean(u?.source), source: u?.source || null, confidence: 'chosen' };
+  }
+  const key = `${site.lat},${site.lon},${province}`;
+  if (!utilityCache.has(key)) {
+    const { options, ...guess } = territory.lookup({ lat: site.lat, lon: site.lon, province });
+    utilityCache.set(key, guess.id ? guess : null);
+    if (utilityCache.size > 5000) utilityCache.clear();
+  }
+  return utilityCache.get(key);
+}
+
 const monitor = createMonitor({
-  sources: config.demo
-    ? demoSources({ fixturePath: path.join(ROOT, 'fixtures/demo-alberta.json'), now })
-    : albertaSources({ request, now }),
+  sources,
   internetSource: !config.internet
     ? null
     : config.demo
       ? demoInternet({ now })
-      : iodaSource({ request, now }),
+      : iodaSource({ request, now, watched: () => watchedAsns(store.listSites()) }),
   store,
   provinces,
   coverage,
+  utilityFor,
   now,
 });
+if (!config.demo)
+  territory.refresh().then(() => {
+    utilityCache.clear();
+    monitor.reassess();
+  });
 
 // ------------------------------------------------------------------ HTTP --
 
@@ -161,6 +204,48 @@ async function handle(req, res) {
       const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') || 100)));
       return json(res, 200, { events: store.recentEvents(limit) });
     }
+    if (p === '/api/geocode' && req.method === 'GET') {
+      const results = await geocoder.search(url.searchParams.get('q'));
+      return json(res, 200, { results, attribution: '© OpenStreetMap contributors (Nominatim)' });
+    }
+    if (p === '/api/lookup' && req.method === 'GET') {
+      const lat = Number(url.searchParams.get('lat'));
+      const lon = Number(url.searchParams.get('lon'));
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180)
+        return json(res, 400, { error: 'lat and lon are required.' });
+      const province = provinceOf({ lat, lon }, provinces);
+      const [place, internet] = await Promise.allSettled([geocoder.reverse(lat, lon), isp.at(lat, lon)]);
+      const address = place.status === 'fulfilled' ? place.value : null;
+      const power = territory.lookup({ lat, lon, province, city: address?.city });
+      return json(res, 200, {
+        lat,
+        lon,
+        province,
+        provinceName: PROVINCE_NAMES[province] || null,
+        covered: Boolean(coverage[province]),
+        address,
+        addressError: place.status === 'rejected' ? place.reason?.message : null,
+        power,
+        internet: internet.status === 'fulfilled' ? internet.value : null,
+        internetError: internet.status === 'rejected' ? internet.reason?.message : null,
+        internetSource: NBM_PAGE,
+      });
+    }
+    if (p === '/api/isp/area' && req.method === 'GET') {
+      const b = String(url.searchParams.get('bbox') || '').split(',').map(Number);
+      if (b.length !== 4 || !b.every(Number.isFinite)) return json(res, 400, { error: 'bbox=w,s,e,n is required.' });
+      if (b[2] - b[0] > 4 || b[3] - b[1] > 3) return json(res, 400, { error: 'Zoom in further to list internet providers.' });
+      return json(res, 200, await isp.area(b));
+    }
+    if (p === '/api/territories' && req.method === 'GET')
+      return send(res, 200, JSON.stringify(territory.geojson()), {
+        'Content-Type': 'application/geo+json',
+        'Cache-Control': 'public, max-age=3600',
+      });
+    if (p === '/api/utilities' && req.method === 'GET') {
+      const province = String(url.searchParams.get('province') || '').toUpperCase();
+      return json(res, 200, { province, utilities: territory.options(province), status: territory.status() });
+    }
     if (p === '/api/sites/export.csv' && req.method === 'GET')
       return send(res, 200, sitesToCsv(store.listSites()), {
         'Content-Type': 'text/csv; charset=utf-8',
@@ -173,6 +258,7 @@ async function handle(req, res) {
       if (p === '/api/sites' && req.method === 'GET') return json(res, 200, { sites: store.listSites() });
       if (p === '/api/sites' && req.method === 'POST') {
         const site = store.addSite(JSON.parse(await readBody(req)));
+        utilityCache.clear();
         monitor.reassess();
         return json(res, 201, { site });
       }
@@ -187,6 +273,7 @@ async function handle(req, res) {
       if (match && req.method === 'PUT') {
         const site = store.updateSite(match[1], JSON.parse(await readBody(req)));
         if (!site) return json(res, 404, { error: 'That site no longer exists.' });
+        utilityCache.clear();
         monitor.reassess();
         return json(res, 200, { site });
       }
@@ -256,6 +343,13 @@ function seedDemoHistory() {
 const timer = setInterval(() => {
   monitor.tick().catch((error) => console.error('[outages] tick failed', error));
 }, config.pollSeconds * 1000);
+const territoryTimer = setInterval(() => {
+  if (!config.demo)
+    territory.refresh().then(() => {
+      utilityCache.clear();
+    });
+}, 6 * 3600_000);
+territoryTimer.unref();
 
 for (const signal of ['SIGINT', 'SIGTERM'])
   process.on(signal, () => {

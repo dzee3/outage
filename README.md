@@ -7,21 +7,34 @@ near one, or in a province whose internet connectivity has dropped.
 
 ## What it covers today
 
-| Power, Alberta | Feed | Shape on the map |
-| --- | --- | --- |
-| ATCO Electric (north and east-central) | ATCO's outage-map database (Firestore) | Outage area + pin |
-| FortisAlberta (rural and towns, central and south) | Fortis's outage-map API | Outage area + pin |
-| ENMAX Power (Calgary) | ENMAX's outage-map API | Pin + named communities |
-| EPCOR (Edmonton) | EPCOR's public ArcGIS layer | Neighbourhood areas |
+Power, live (18 feeds, read the way each utility's own outage map reads them):
 
-**Not covered in Alberta** (no live feed is published): Red Deer, Lethbridge
-and Medicine Hat city utilities, the rural electrification associations (EQUS,
-Battle River…) and a few town utilities. Other provinces have no power feed yet
-and are darkened on the map.
+| Province | Utilities with a live feed |
+| --- | --- |
+| British Columbia | BC Hydro, FortisBC |
+| Alberta | ATCO Electric, FortisAlberta, ENMAX (Calgary), EPCOR (Edmonton) |
+| Saskatchewan | SaskPower (by service region, no customer counts), Saskatoon Light & Power |
+| Manitoba | Manitoba Hydro |
+| Ontario | Hydro One, Toronto Hydro, Alectra, Hydro Ottawa |
+| New Brunswick | NB Power |
+| Nova Scotia | Nova Scotia Power |
+| Prince Edward Island | Maritime Electric |
+| Newfoundland and Labrador | Newfoundland Power, NL Hydro |
 
-**Internet, all provinces:** province-level connectivity drops from
-[IODA](https://ioda.inetintel.cc.gatech.edu/country/CA) (Georgia Tech). It
-tells you "connectivity in Manitoba dropped", never which town or provider.
+Not covered: municipal and small utilities that publish no live map (Lethbridge,
+Red Deer, Medicine Hat, Saint John Energy, Summerside, the other ~50 Ontario
+distributors…; the **Sources** panel lists them), Quebec and the territories.
+A client site served by one of those shows "Power not monitored".
+
+Internet:
+
+- **Province-wide drops** from [IODA](https://ioda.inetintel.cc.gatech.edu/country/CA) (Georgia Tech).
+- **Provider networks:** IODA's per-network signals for Bell, Bell MTS, Bell
+  Aliant, Rogers, Shaw, Telus, SaskTel, Eastlink, Cogeco, Xplore, TekSavvy,
+  Distributel and Starlink. A client whose provider's network drops is flagged.
+  These are national network signals, so they can't tell which town is affected.
+- **Who serves a spot:** the federal [National Broadband Map](https://ised-isde.canada.ca/app/scr/sittibc/web/bbmap?lang=eng#!/map)
+  (ISED), in ~25 km² hexagons.
 
 ## Run it
 
@@ -43,10 +56,21 @@ To try it with sample data and no network: `DEMO=1 docker compose up -d --build`
 
 ## Client sites
 
-Add sites in the **Clients** tab: either click **Add a site** and click the map,
-or import a CSV. The CSV needs a header row with `name`, `lat` and `lon`;
-`address`, `notes` and `radius_km` are optional. See
-`fixtures/sample-sites.csv`. **Export CSV** downloads the current list.
+Click **+ Add client**, then either search an address or click the map to drop
+a pin (drag it to adjust). The dashboard then looks up:
+
+- **Address** for the pin (OpenStreetMap / Nominatim).
+- **Power utility.** It checks published service-area boundaries first
+  (Ontario's distributor map, FortisBC, Saskatoon L&P, Newfoundland Power), then
+  municipal utilities by city, then the province's main utility. Alberta
+  publishes no ATCO/Fortis boundary, so there it is labelled a best guess. You can
+  always pick another utility from the list.
+- **Internet providers** that serve that hexagon, from the National Broadband
+  Map, with their technologies. Pick the client's ISP, or choose **Other**.
+
+CSV import still works: a header row with `name`, `lat`, `lon`; optional
+`address`, `notes`, `radius_km`, `utility` (an id such as `enmax`,
+`hydroone`) and `isp`. **Export** downloads the current list.
 
 Each site gets one status:
 
@@ -54,10 +78,19 @@ Each site gets one status:
 | --- | --- |
 | Inside an outage | The site is within a published outage area |
 | Outage nearby | An outage (or planned work underway) is within the site's alert radius (default 3 km) |
-| Internet disruption in province | IODA reports a province-wide connectivity drop |
+| Internet disruption | Its provider's network, or its whole province, shows a connectivity drop |
 | Planned work coming | Planned work within the radius in the next 7 days |
 | No outages nearby | Covered, and nothing nearby |
-| Power not monitored here | No power feed for that province yet |
+| Power not monitored | Its utility (or province) has no live feed |
+
+## Map layers
+
+**Layers** in the left dock turns on:
+
+- utility service areas, with the main utility named in each province
+- internet providers in view: zoom to a city or region, and a card lists the
+  providers found across the visible area, from the broadband map
+- province-wide internet drops, client sites and their name labels
 
 Turn on **Alerts** in the top bar to get a tone and a desktop notice when a site
 changes status or an outage over 1,000 customers starts. Alerts are per browser.
@@ -69,10 +102,10 @@ add, change or remove sites. Viewing never needs it.
 
 The server polls in the background whether or not anyone has the page open:
 live outages every 2 minutes, planned-work schedules every 15 minutes, IODA
-every 5 minutes. Pages refresh every 30 seconds. End-to-end lag is the
+every 5 minutes (Kubra-based maps every 3). Pages refresh every 30 seconds. End-to-end lag is the
 utility's own update time plus up to 2 minutes.
 
-The lamps in the top bar show each feed:
+The **feeds** chip in the top bar counts live feeds; the **Sources** panel shows each one:
 
 - **Green, live:** the last poll worked.
 - **Amber, stale:** the last poll failed. Its last good outages stay on the map
@@ -95,9 +128,10 @@ utility every 5 minutes, kept 7 days). Back it up with
 
 ## Times
 
-Outage times are shown in Alberta time (MT). Alberta has been on UTC−6 all year
-since March 2026; that rule is built into the code rather than read from the
-machine's time-zone database, which may predate the change.
+Outage times are shown in the outage's own province time (MT, CT, ET, AT, NT).
+Alberta has been on UTC−6 all year since March 2026; that rule is built into
+the code rather than read from the machine's time-zone database, which may
+predate the change.
 
 ## Settings
 
@@ -112,10 +146,12 @@ machine's time-zone database, which may predate the change.
 
 ## Adding a province
 
-Write `server/sources/<province>.js` returning source descriptors like
-`server/sources/alberta.js` (each with feeds that return normalized records; see
-`server/records.js`), register it in `server/index.js` and add the province to
-`coverage`. Hydro-Québec publishes an official feed, but under a
+Utilities live in `server/sources/alberta.js` and `server/sources/canada.js`
+(descriptors whose feeds return normalized records; see `server/records.js` and
+`server/records-canada.js`). Many utilities use Kubra's storm centre: for those,
+`kubraV2()` in `server/sources/kubra.js` needs only the storm-centre and view ids
+from the utility's map. Add the utility to `server/utilities.js` too, so client
+sites can name it. Hydro-Québec publishes an official feed, but under a
 non-commercial licence (CC BY-NC 4.0).
 
 ## Data and licences
@@ -128,7 +164,14 @@ non-commercial licence (CC BY-NC 4.0).
   OpenStreetMap contributors. Free, no key, commercial use allowed. If it is
   unreachable the map falls back to province outlines and keeps working.
 - Province outlines: Natural Earth (public domain).
-- Map library: MapLibre GL JS (BSD-3-Clause). Font: IBM Plex Sans Condensed (OFL).
+- Ontario distributor boundaries: Ontario Energy Board via data.ontario.ca,
+  Open Government Licence – Ontario. Downloaded by the server and refreshed weekly.
+- Internet providers: ISED National Broadband Map (Open Government Licence – Canada
+  for the published data). Looked up per point and cached 30 days.
+- Addresses: © OpenStreetMap contributors via Nominatim, used under its usage
+  policy (at most one lookup a second, cached, attributed in the add-client panel).
+- Map library: MapLibre GL JS (BSD-3-Clause). Fonts: IBM Plex Sans Condensed
+  and Rajdhani (both OFL).
 
 ## Development
 

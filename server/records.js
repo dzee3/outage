@@ -27,7 +27,7 @@ export const OUTAGE_KINDS = Object.freeze([
 /** Planned work further out than this is left to the utility's own page. */
 export const UPCOMING_WINDOW_MS = 7 * 24 * 3600_000;
 
-const text = (value) => {
+export const text = (value) => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
@@ -100,7 +100,7 @@ export function parseAlbertaTime(value) {
   return guess;
 }
 
-function validRing(ring) {
+export function validRing(ring) {
   if (!Array.isArray(ring) || ring.length < 4) return false;
   return ring.every(
     (p) =>
@@ -112,7 +112,7 @@ function validRing(ring) {
   );
 }
 
-function closeRing(ring) {
+export function closeRing(ring) {
   if (!Array.isArray(ring) || ring.length < 3) return ring;
   const [a, b] = [ring[0], ring[ring.length - 1]];
   return a[0] === b[0] && a[1] === b[1] ? ring : [...ring, a];
@@ -166,7 +166,7 @@ export function plannedKind(startMs, endMs, nowMs) {
 }
 
 /** Finish a record: fill the point from polygons, drop it if unlocatable. */
-function finish(record) {
+export function finish(record) {
   const point = validPoint(record.point)
     ? record.point
     : polygonsAnchor(record.polygons);

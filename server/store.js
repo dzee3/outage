@@ -57,13 +57,16 @@ export function validateSite(input, existing = {}) {
     throw new Error('Longitude must be a number between -180 and 180.');
   if ('address' in input) site.address = clean(input.address, 300);
   if ('notes' in input) site.notes = clean(input.notes, 500);
+  // Who supplies the site. Empty means "work it out from the location".
+  if ('utility' in input) site.utility = clean(input.utility, 60).toLowerCase().replace(/[^a-z0-9-]/g, '');
+  if ('isp' in input) site.isp = clean(input.isp, 80);
   if ('radiusKm' in input && input.radiusKm !== '' && input.radiusKm != null) {
     const r = Number(input.radiusKm);
     if (!Number.isFinite(r) || r < 0.2 || r > 50)
       throw new Error('Alert radius must be between 0.2 and 50 km.');
     site.radiusKm = r;
   }
-  for (const key of ['address', 'notes']) if (site[key] === '') delete site[key];
+  for (const key of ['address', 'notes', 'utility', 'isp']) if (site[key] === '') delete site[key];
   site.lat = Math.round(site.lat * 1e6) / 1e6;
   site.lon = Math.round(site.lon * 1e6) / 1e6;
   return site;
@@ -107,6 +110,8 @@ const HEADER_ALIASES = {
   address: ['address', 'location'],
   notes: ['notes', 'note', 'comments'],
   radiusKm: ['radius_km', 'radius', 'radius km', 'alert radius'],
+  utility: ['utility', 'power', 'power utility', 'utility_id'],
+  isp: ['isp', 'internet', 'internet provider', 'provider'],
 };
 
 /** CSV text → {sites, errors}. Needs a header row with name, lat, lon. */
@@ -142,9 +147,9 @@ export function sitesToCsv(sites) {
     const s = v == null ? '' : String(v);
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const lines = ['name,lat,lon,address,notes,radius_km'];
+  const lines = ['name,lat,lon,address,notes,radius_km,utility,isp'];
   for (const s of sites)
-    lines.push([s.name, s.lat, s.lon, s.address, s.notes, s.radiusKm].map(q).join(','));
+    lines.push([s.name, s.lat, s.lon, s.address, s.notes, s.radiusKm, s.utility, s.isp].map(q).join(','));
   return `${lines.join('\n')}\n`;
 }
 

@@ -62,6 +62,43 @@ export async function requestJson(
 }
 
 /**
+ * Like requestJson but returns {status, headers, text} and never throws on
+ * HTTP status (callers decide). Used for XML/KML feeds and cookie handshakes.
+ */
+export async function requestRaw(
+  url,
+  { method = 'GET', headers = {}, body, timeoutMs = 20_000, fetchImpl = globalThis.fetch } = {},
+) {
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method,
+      body,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { 'User-Agent': USER_AGENT, ...headers },
+    });
+  } catch (error) {
+    const cause = error?.cause?.code || error?.cause?.message || error?.name;
+    throw new Error(
+      error?.name === 'TimeoutError'
+        ? `No answer within ${Math.round(timeoutMs / 1000)} s`
+        : `Cannot connect (${cause || error.message})`,
+    );
+  }
+  const text = await response.text();
+  if (text.length > MAX_BYTES) throw new Error('Response too large');
+  return { status: response.status, headers: response.headers, text };
+}
+
+/** requestRaw that insists on HTTP 200 and returns the body text. */
+export async function requestText(url, options) {
+  const r = await requestRaw(url, options);
+  if (r.status !== 200) throw new HttpError(r.status, url);
+  return r.text;
+}
+
+/**
  * IODA's API misbehaves with TLS 1.3 clients (the reference client pins 1.2),
  * so this one path uses node:https with maxVersion TLSv1.2.
  */

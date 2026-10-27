@@ -86,7 +86,27 @@ export function summarizeIoda(events, codeToProvince, nowS) {
   return { provinces, recent: recent.slice(0, 50) };
 }
 
-export function iodaSource({ request, now }) {
+/** IODA per-network (ASN) events → {asn: {asn, name, active, since, score, signals}}. */
+export function summarizeNetworks(events, names, nowS) {
+  const networks = {};
+  for (const [asn, name] of names) networks[asn] = { asn: Number(asn), name, active: false, score: 0, signals: [], since: null };
+  for (const event of Array.isArray(events) ? events : []) {
+    const asn = String(event?.entity?.code ?? '');
+    const n = networks[asn];
+    if (!n) continue;
+    const from = Number(event.from);
+    const until = Number(event.until);
+    if (!Number.isFinite(from) || !Number.isFinite(until)) continue;
+    if (until < nowS - ONGOING_SLACK_S) continue;
+    n.active = true;
+    n.score = Math.max(n.score, Number(event.score) || 0);
+    if (event.datasource && !n.signals.includes(event.datasource)) n.signals.push(String(event.datasource));
+    n.since = n.since == null ? from * 1000 : Math.min(n.since, from * 1000);
+  }
+  return networks;
+}
+
+export function iodaSource({ request, now, watched = () => new Map() }) {
   let entities = null;
   let entitiesAt = 0;
   const get = async (path, params) => {
@@ -125,7 +145,26 @@ export function iodaSource({ request, now }) {
         until: String(nowS),
         format: 'ioda',
       });
-      return summarizeIoda(events, entities, nowS);
+      const summary = summarizeIoda(events, entities, nowS);
+      // Provider networks: a lost network shows here before (or without) a
+      // whole province dipping. Failure here keeps the province data.
+      const names = watched();
+      summary.networks = {};
+      if (names.size) {
+        try {
+          const netEvents = await get('outages/events', {
+            entityType: 'asn',
+            entityCode: [...names.keys()].join(','),
+            from: String(nowS - LOOKBACK_S),
+            until: String(nowS),
+            format: 'ioda',
+          });
+          summary.networks = summarizeNetworks(netEvents, names, nowS);
+        } catch (error) {
+          summary.networksError = String(error?.message || error).slice(0, 200);
+        }
+      }
+      return summary;
     },
   };
 }

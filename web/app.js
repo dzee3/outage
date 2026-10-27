@@ -1,5 +1,6 @@
-/* Outage Desk front end. Plain DOM + MapLibre; every value from a utility
- * is written as text, never as HTML. */
+/* Outage Desk front end: full-bleed map with a floating HUD. Plain DOM +
+ * MapLibre; every value from a utility or lookup is written as text, never
+ * as HTML. */
 
 const maplibregl = window.maplibregl;
 maplibregl.setWorkerUrl('/vendor/maplibre-gl-csp-worker.js');
@@ -7,50 +8,53 @@ maplibregl.setWorkerUrl('/vendor/maplibre-gl-csp-worker.js');
 const REFRESH_MS = 30_000;
 const HISTORY_REFRESH_MS = 120_000;
 const LATE_MS = 3 * 60_000;
-const CANADA = [
-  [-141, 41.6],
-  [-52.6, 70],
-];
-const ALBERTA = [
-  [-120.2, 48.9],
-  [-109.9, 60.1],
-];
+const CANADA = [[-141, 41.6], [-52.6, 62]];
 const COLORS = {
-  unplanned: '#ff5a47',
-  'planned-active': '#f6b73c',
+  unplanned: '#ff3b5c',
+  'planned-active': '#ffb02e',
   'planned-upcoming': '#6fa8dc',
-  site: '#2ec4b6',
-  internet: '#a78bfa',
+  site: '#5ef0ff',
+  internet: '#a993ff',
 };
 const SITE_COLORS = {
-  out: '#ff5a47',
-  near: '#f6b73c',
-  internet: '#a78bfa',
+  out: '#ff3b5c',
+  near: '#ffb02e',
+  internet: '#a993ff',
   planned: '#6fa8dc',
-  ok: '#2ec4b6',
-  'no-coverage': '#8fa1b3',
+  ok: '#5ef0ff',
+  'no-coverage': '#7d8f9c',
 };
 const SITE_STATUS_TEXT = {
   out: 'Inside an outage',
   near: 'Outage nearby',
-  internet: 'Internet disruption in province',
+  internet: 'Internet disruption',
   planned: 'Planned work coming',
   ok: 'No outages nearby',
-  'no-coverage': 'Power not monitored here',
+  'no-coverage': 'Power not monitored',
 };
 const KIND_TEXT = {
   unplanned: 'Unplanned outage',
   'planned-active': 'Planned work underway',
   'planned-upcoming': 'Planned work, upcoming',
 };
-const UTILITY = { atco: 'ATCO Electric', fortis: 'FortisAlberta', enmax: 'ENMAX', epcor: 'EPCOR' };
-const SHORT = { atco: 'ATCO', fortis: 'Fortis', enmax: 'ENMAX', epcor: 'EPCOR', ioda: 'Internet' };
-const CHART_COLORS = { atco: '#5b8def', fortis: '#7fb685', enmax: '#d9a441', epcor: '#c38d9e' };
 const PROVINCE_NAMES = {
   AB: 'Alberta', BC: 'British Columbia', MB: 'Manitoba', NB: 'New Brunswick',
   NL: 'Newfoundland and Labrador', NS: 'Nova Scotia', NT: 'Northwest Territories',
   NU: 'Nunavut', ON: 'Ontario', PE: 'Prince Edward Island', QC: 'Quebec',
   SK: 'Saskatchewan', YT: 'Yukon',
+};
+const PROVINCE_ORDER = ['BC', 'AB', 'SK', 'MB', 'ON', 'NB', 'NS', 'PE', 'NL'];
+const ZONES = {
+  BC: 'America/Vancouver', SK: 'America/Regina', MB: 'America/Winnipeg', ON: 'America/Toronto',
+  NB: 'America/Moncton', NS: 'America/Halifax', PE: 'America/Halifax', NL: 'America/St_Johns',
+};
+const PROVINCE_COLORS = {
+  BC: '#4cc9f0', AB: '#f72585', SK: '#b5e48c', MB: '#ffd166', ON: '#7b9cff',
+  NB: '#ff9f68', NS: '#2ec4b6', PE: '#e07a5f', NL: '#c77dff',
+};
+const DEFAULT_UTILITY_LABEL = {
+  BC: 'BC Hydro', SK: 'SaskPower', MB: 'Manitoba Hydro', NB: 'NB Power', NS: 'Nova Scotia Power',
+  PE: 'Maritime Electric', NL: 'NL Hydro (outside Newfoundland Power)', AB: 'ATCO / FortisAlberta',
 };
 
 // ------------------------------------------------------------ utilities --
@@ -73,7 +77,7 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 const fmt = (n) => (Number.isFinite(n) ? n.toLocaleString('en-CA') : '–');
-const store = {
+const local = {
   get(k) {
     try {
       return localStorage.getItem(k);
@@ -89,29 +93,30 @@ const store = {
     }
   },
 };
-
-/* Alberta has been on UTC-6 all year since March 2026 (see server/records.js). */
-const PERMANENT_MDT_FROM = Date.UTC(2026, 2, 8, 9);
-function albertaOffset(ms) {
-  if (ms >= PERMANENT_MDT_FROM) return -6 * 3600_000;
-  const y = new Date(ms).getUTCFullYear();
-  const sunday = (m, n) => {
-    const first = new Date(Date.UTC(y, m, 1)).getUTCDay();
-    return 1 + ((7 - first) % 7) + 7 * (n - 1);
+const debounce = (fn, ms) => {
+  let t;
+  return (...a) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...a), ms);
   };
-  const start = Date.UTC(y, 2, sunday(2, 2), 9);
-  const end = Date.UTC(y, 10, sunday(10, 1), 8);
-  return ms >= start && ms < end ? -6 * 3600_000 : -7 * 3600_000;
-}
-const MT = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'UTC',
-  weekday: 'short',
-  hour: 'numeric',
-  minute: '2-digit',
-});
-function mt(ms) {
+};
+
+/* Alberta has been on UTC-6 all year since March 2026 (see server/records.js);
+ * a browser with older zone data would show MST, so Alberta is fixed here. */
+const PERMANENT_MDT_FROM = Date.UTC(2026, 2, 8, 9);
+const WHEN = new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC', weekday: 'short', hour: 'numeric', minute: '2-digit' });
+const zoneFormats = new Map();
+/** A time in the outage's own province, labelled with its zone. */
+function when(ms, province) {
   if (!Number.isFinite(ms)) return null;
-  return `${MT.format(new Date(ms + albertaOffset(ms)))} MT`;
+  if (province === 'AB' && ms >= PERMANENT_MDT_FROM) return `${WHEN.format(new Date(ms - 6 * 3600_000))} MT`;
+  const zone = ZONES[province] || ZONES.ON;
+  let f = zoneFormats.get(zone);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-CA', { timeZone: zone, weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
+    zoneFormats.set(zone, f);
+  }
+  return f.format(new Date(ms));
 }
 const LOCAL = new Intl.DateTimeFormat('en-CA', { hour: 'numeric', minute: '2-digit' });
 function ago(ms) {
@@ -137,6 +142,8 @@ function customersText(row) {
   return Number.isFinite(row.customers) ? fmt(row.customers) : '?';
 }
 const placeName = (row) => row.area || row.cause || 'Location not named';
+const utilityName = (id) => state.snap?.sources.find((s) => s.id === id)?.name || id;
+const statusWord = (s) => ({ ok: 'live', stale: 'stale', down: 'down', off: 'off' })[s] || s;
 
 // ---------------------------------------------------------------- state --
 
@@ -144,65 +151,93 @@ const state = {
   snap: null,
   lastOkAt: 0,
   filter: 'all',
+  province: local.get('provFilter') || '',
   search: '',
   selectedId: null,
   selectedSiteId: null,
-  alerts: store.get('alerts') === 'on',
-  editToken: store.get('editToken') || '',
+  alerts: local.get('alerts') === 'on',
+  editToken: local.get('editToken') || '',
+  panel: null,
   picking: false,
   editingSiteId: null,
+  draft: null, // {lat, lon, lookup}
   prevSiteStatus: null,
   prevOutageIds: null,
   history: [],
   events: [],
-  tab: 'outages',
+  layers: {
+    outages: local.get('layer:outages') !== 'off',
+    territories: local.get('layer:territories') === 'on',
+    internet: local.get('layer:internet') !== 'off',
+    isp: local.get('layer:isp') === 'on',
+    clients: local.get('layer:clients') !== 'off',
+    labels: local.get('layer:labels') !== 'off',
+  },
 };
 
 // ------------------------------------------------------------------ map --
 
 const BASEMAP = 'https://tiles.openfreemap.org/styles/dark';
-/** If the basemap host is unreachable, outages still draw on province outlines. */
 const FALLBACK_STYLE = {
   version: 8,
   sources: {},
-  layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#0d1419' } }],
+  layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#05080b' } }],
 };
 let usingFallback = false;
 const map = new maplibregl.Map({
   container: 'map',
   style: BASEMAP,
   bounds: CANADA,
-  fitBoundsOptions: { padding: 30 },
+  fitBoundsOptions: { padding: { top: 90, bottom: 80, left: 90, right: 40 } },
   attributionControl: { compact: true },
   maxPitch: 0,
   dragRotate: false,
   pitchWithRotate: false,
 });
 map.touchZoomRotate.disableRotation();
-map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
 map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right');
 
 let mapReady = false;
 let popup = null;
+let pin = null;
 
-function diamond(color) {
-  const size = 22;
+function diamond(color, size = 22) {
   const c = document.createElement('canvas');
   c.width = c.height = size * 2;
   const g = c.getContext('2d');
   g.scale(2, 2);
   g.translate(size / 2, size / 2);
   g.rotate(Math.PI / 4);
-  g.fillStyle = '#0f161d';
+  g.shadowColor = color;
+  g.shadowBlur = 6;
+  g.fillStyle = '#071017';
   g.strokeStyle = color;
-  g.lineWidth = 3;
+  g.lineWidth = 2.6;
   g.beginPath();
-  g.rect(-6, -6, 12, 12);
+  g.rect(-5.5, -5.5, 11, 11);
   g.fill();
   g.stroke();
+  g.shadowBlur = 0;
   g.fillStyle = color;
-  g.fillRect(-2, -2, 4, 4);
+  g.fillRect(-1.8, -1.8, 3.6, 3.6);
   return g.getImageData(0, 0, size * 2, size * 2);
+}
+
+/** Pull the OpenFreeMap dark style toward the HUD palette. */
+function tintBasemap() {
+  for (const layer of map.getStyle().layers || []) {
+    const id = layer.id;
+    try {
+      if (layer.type === 'background') map.setPaintProperty(id, 'background-color', '#070d12');
+      else if (layer.type === 'fill' && /water/.test(id)) map.setPaintProperty(id, 'fill-color', '#04121b');
+      else if (layer.type === 'fill' && /landcover|landuse|park|wood|grass/.test(id)) map.setPaintProperty(id, 'fill-opacity', 0.25);
+      else if (layer.type === 'line' && /boundary|admin/.test(id)) map.setPaintProperty(id, 'line-color', '#2a4656');
+      else if (layer.type === 'symbol' && /place|label/.test(id) && layer.paint?.['text-color'] !== undefined) map.setPaintProperty(id, 'text-color', '#7f97a6');
+    } catch {
+      /* layer without that property */
+    }
+  }
 }
 
 function useFallback(reason) {
@@ -219,45 +254,83 @@ map.on('error', (e) => {
   if (!mapReady && !usingFallback) useFallback(e?.error?.message || 'style error');
 });
 
+const empty = () => ({ type: 'FeatureCollection', features: [] });
+const TEXT_FONT = ['Noto Sans Regular'];
+const BOLD_FONT = ['Noto Sans Bold'];
+
 map.on('style.load', () => {
   clearTimeout(basemapTimer);
+  if (!usingFallback) tintBasemap();
   for (const [status, color] of Object.entries(SITE_COLORS))
     if (!map.hasImage(`site-${status}`)) map.addImage(`site-${status}`, diamond(color), { pixelRatio: 2 });
+  const withText = !usingFallback;
 
   map.addSource('provinces', { type: 'geojson', data: '/data/provinces.geojson', promoteId: 'code' });
   map.addLayer({
     id: 'prov-dim',
     type: 'fill',
     source: 'provinces',
-    paint: {
-      'fill-color': '#05090c',
-      'fill-opacity': ['case', ['boolean', ['feature-state', 'covered'], false], 0, 0.45],
-    },
+    paint: { 'fill-color': '#020406', 'fill-opacity': ['case', ['boolean', ['feature-state', 'covered'], false], 0, 0.55] },
   });
   map.addLayer({
     id: 'prov-internet',
     type: 'fill',
     source: 'provinces',
-    paint: {
-      'fill-color': COLORS.internet,
-      'fill-opacity': ['case', ['boolean', ['feature-state', 'internet'], false], 0.2, 0],
-    },
+    paint: { 'fill-color': COLORS.internet, 'fill-opacity': ['case', ['boolean', ['feature-state', 'internet'], false], 0.16, 0] },
   });
   map.addLayer({
     id: 'prov-line',
     type: 'line',
     source: 'provinces',
     paint: {
-      'line-color': [
-        'case',
-        ['boolean', ['feature-state', 'internet'], false],
-        COLORS.internet,
-        ['boolean', ['feature-state', 'covered'], false],
-        '#6b7f93',
-        '#33424f',
-      ],
+      'line-color': ['case', ['boolean', ['feature-state', 'internet'], false], COLORS.internet, ['boolean', ['feature-state', 'covered'], false], '#3e7f8f', '#1d2c38'],
       'line-width': ['case', ['boolean', ['feature-state', 'internet'], false], 2, 1],
+      'line-opacity': 0.8,
     },
+  });
+
+  // Utility service areas (published boundaries) + each province's main utility.
+  map.addSource('territories', { type: 'geojson', data: empty() });
+  map.addLayer({
+    id: 'terr-fill',
+    type: 'fill',
+    source: 'territories',
+    layout: { visibility: 'none' },
+    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.1 },
+  });
+  map.addLayer({
+    id: 'terr-line',
+    type: 'line',
+    source: 'territories',
+    layout: { visibility: 'none' },
+    paint: { 'line-color': ['get', 'color'], 'line-width': 1.2, 'line-opacity': 0.7, 'line-dasharray': [3, 2] },
+  });
+  map.addSource('terr-labels', { type: 'geojson', data: empty() });
+  if (withText)
+    map.addLayer({
+      id: 'terr-label',
+      type: 'symbol',
+      source: 'terr-labels',
+      layout: {
+        visibility: 'none',
+        'text-field': ['get', 'name'],
+        'text-font': BOLD_FONT,
+        'text-size': ['interpolate', ['linear'], ['zoom'], 3, 10, 8, 13],
+        'text-transform': 'uppercase',
+        'text-letter-spacing': 0.12,
+        'text-max-width': 9,
+        'symbol-sort-key': ['get', 'rank'],
+      },
+      paint: { 'text-color': ['get', 'color'], 'text-halo-color': '#05080b', 'text-halo-width': 1.6, 'text-opacity': 0.85 },
+    });
+
+  // Internet providers sampled in view (hexagon outlines).
+  map.addSource('isp-hex', { type: 'geojson', data: empty() });
+  map.addLayer({
+    id: 'isp-hex',
+    type: 'line',
+    source: 'isp-hex',
+    paint: { 'line-color': COLORS.internet, 'line-width': 1, 'line-opacity': 0.45 },
   });
 
   map.addSource('areas', { type: 'geojson', data: empty() });
@@ -265,38 +338,26 @@ map.on('style.load', () => {
     id: 'areas-fill',
     type: 'fill',
     source: 'areas',
-    paint: {
-      'fill-color': ['get', 'color'],
-      'fill-opacity': ['match', ['get', 'kind'], 'unplanned', 0.32, 0.18],
-    },
+    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['match', ['get', 'kind'], 'unplanned', 0.28, 0.16] },
   });
   map.addLayer({
     id: 'areas-line',
     type: 'line',
     source: 'areas',
-    paint: { 'line-color': ['get', 'color'], 'line-width': 1.5, 'line-opacity': 0.9 },
+    paint: { 'line-color': ['get', 'color'], 'line-width': 1.4, 'line-opacity': 0.9 },
   });
 
   map.addSource('points', { type: 'geojson', data: empty() });
-  const radius = [
-    'interpolate',
-    ['linear'],
-    ['sqrt', ['max', 1, ['coalesce', ['get', 'customers'], 1]]],
-    1, 5,
-    10, 9,
-    40, 16,
-    150, 26,
-  ];
+  const radius = ['interpolate', ['linear'], ['sqrt', ['max', 1, ['coalesce', ['get', 'customers'], 1]]], 1, 4, 10, 7, 40, 13, 150, 22];
   map.addLayer({
-    id: 'points-halo',
+    id: 'points-glow',
     type: 'circle',
     source: 'points',
-    filter: ['all', ['==', ['get', 'kind'], 'unplanned'], ['>=', ['coalesce', ['get', 'customers'], 0], 100]],
     paint: {
-      'circle-radius': ['*', radius, 1.9],
-      'circle-color': COLORS.unplanned,
-      'circle-opacity': 0.16,
-      'circle-blur': 0.4,
+      'circle-radius': ['*', radius, 2.6],
+      'circle-color': ['get', 'color'],
+      'circle-opacity': ['match', ['get', 'kind'], 'unplanned', 0.28, 0.14],
+      'circle-blur': 1,
     },
   });
   map.addLayer({
@@ -306,9 +367,9 @@ map.on('style.load', () => {
     paint: {
       'circle-radius': radius,
       'circle-color': ['get', 'color'],
-      'circle-opacity': ['match', ['get', 'kind'], 'planned-upcoming', 0.75, 0.92],
-      'circle-stroke-color': ['case', ['get', 'selected'], '#ffffff', '#0b1116'],
-      'circle-stroke-width': ['case', ['get', 'selected'], 2.5, 1.5],
+      'circle-opacity': ['match', ['get', 'kind'], 'planned-upcoming', 0.7, 0.95],
+      'circle-stroke-color': ['case', ['get', 'selected'], '#ffffff', '#05080b'],
+      'circle-stroke-width': ['case', ['get', 'selected'], 2.5, 1.2],
     },
   });
 
@@ -320,29 +381,37 @@ map.on('style.load', () => {
     layout: {
       'icon-image': ['concat', 'site-', ['get', 'status']],
       'icon-allow-overlap': true,
-      'icon-size': ['case', ['in', ['get', 'status'], ['literal', ['out', 'near', 'internet']]], 1.25, 1],
+      'icon-size': ['case', ['in', ['get', 'status'], ['literal', ['out', 'near', 'internet']]], 1.3, 1],
       'symbol-sort-key': ['get', 'rank'],
-      ...(usingFallback
-        ? {}
-        : {
-            'text-field': ['step', ['zoom'], '', 7, ['get', 'name']],
-            'text-font': ['Noto Sans Regular'],
-            'text-size': 12,
-            'text-offset': [0, 1.3],
-            'text-anchor': 'top',
-            'text-optional': true,
-          }),
     },
-    paint: usingFallback
-      ? {}
-      : {
-          'text-color': '#cfe9e6',
-          'text-halo-color': '#0b1116',
-          'text-halo-width': 1.5,
-        },
   });
+  if (withText)
+    map.addLayer({
+      id: 'site-labels',
+      type: 'symbol',
+      source: 'sites',
+      layout: {
+        'text-field': ['format', ['upcase', ['get', 'name']], { 'font-scale': 1 }, '\n', {}, ['get', 'detail'], { 'font-scale': 0.82 }],
+        'text-font': BOLD_FONT,
+        'text-size': 12,
+        'text-letter-spacing': 0.05,
+        'text-offset': [1.1, 0],
+        'text-anchor': 'left',
+        'text-justify': 'left',
+        'text-max-width': 18,
+        'text-optional': true,
+        'symbol-sort-key': ['get', 'rank'],
+      },
+      paint: {
+        'text-color': ['get', 'color'],
+        'text-halo-color': '#05080b',
+        'text-halo-width': 1.8,
+      },
+    });
 
   mapReady = true;
+  applyLayerVisibility();
+  loadTerritories();
   if (state.snap) renderMap();
 });
 
@@ -368,22 +437,46 @@ map.on('style.load', () => {
   }
   map.on('click', (e) => {
     if (!state.picking) return;
-    finishPicking(e.lngLat);
+    placeDraft(e.lngLat.lat, e.lngLat.lng);
   });
 }
 
-const empty = () => ({ type: 'FeatureCollection', features: [] });
+function setVisible(id, on) {
+  if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+}
+function applyLayerVisibility() {
+  if (!mapReady) return;
+  const L = state.layers;
+  for (const id of ['points', 'points-glow', 'areas-fill', 'areas-line']) setVisible(id, L.outages);
+  for (const id of ['terr-fill', 'terr-line', 'terr-label']) setVisible(id, L.territories);
+  setVisible('prov-internet', L.internet);
+  setVisible('sites', L.clients);
+  setVisible('site-labels', L.clients && L.labels);
+  setVisible('isp-hex', L.isp);
+  $('isp-card').hidden = !L.isp;
+  if (L.isp) loadIspInView();
+}
 
 function visibleRows() {
   const rows = state.snap?.rows || [];
   const f = state.filter;
   return rows.filter((r) => {
+    if (state.province && r.province !== state.province) return false;
     if (f === 'all') return r.kind !== 'planned-upcoming';
     if (f === 'unplanned') return r.kind === 'unplanned';
     if (f === 'planned') return r.kind === 'planned-active';
     if (f === 'upcoming') return r.kind === 'planned-upcoming';
     return true;
   });
+}
+
+function siteDetail(s) {
+  const first = s.impact.outages[0];
+  if (s.impact.status === 'out') return 'NO POWER';
+  if (s.impact.status === 'near' && first) return `outage ${first.distanceKm} km`;
+  if (s.impact.status === 'internet') return s.impact.network ? `${s.impact.network.name} network drop` : 'internet drop';
+  if (s.impact.status === 'planned' && first) return `planned work ${first.distanceKm} km`;
+  return '';
 }
 
 function renderMap() {
@@ -394,20 +487,10 @@ function renderMap() {
   for (const r of rows) {
     const color = COLORS[r.kind];
     if (r.polygons.length)
-      areas.push({
-        type: 'Feature',
-        properties: { id: r.stableId, kind: r.kind, color },
-        geometry: { type: 'MultiPolygon', coordinates: r.polygons },
-      });
+      areas.push({ type: 'Feature', properties: { id: r.stableId, kind: r.kind, color }, geometry: { type: 'MultiPolygon', coordinates: r.polygons } });
     points.push({
       type: 'Feature',
-      properties: {
-        id: r.stableId,
-        kind: r.kind,
-        color,
-        customers: r.customers ?? 1,
-        selected: r.stableId === state.selectedId,
-      },
+      properties: { id: r.stableId, kind: r.kind, color, customers: r.customers ?? 1, selected: r.stableId === state.selectedId },
       geometry: { type: 'Point', coordinates: [r.point.lon, r.point.lat] },
     });
   }
@@ -418,27 +501,125 @@ function renderMap() {
     type: 'FeatureCollection',
     features: state.snap.sites.map((s) => ({
       type: 'Feature',
-      properties: { id: s.id, name: s.name, status: s.impact.status, rank: 10 - rank[s.impact.status] },
+      properties: {
+        id: s.id,
+        name: s.name,
+        detail: siteDetail(s),
+        status: s.impact.status,
+        color: s.impact.status === 'ok' ? '#cfeef5' : SITE_COLORS[s.impact.status],
+        rank: rank[s.impact.status],
+      },
       geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
     })),
   });
   const covered = new Set(Object.keys(state.snap.coverage || {}));
   const internet = state.snap.internet?.provinces || {};
   for (const code of Object.keys(PROVINCE_NAMES))
-    map.setFeatureState(
-      { source: 'provinces', id: code },
-      { covered: covered.has(code), internet: Boolean(internet[code]?.active) },
-    );
+    map.setFeatureState({ source: 'provinces', id: code }, { covered: covered.has(code), internet: Boolean(internet[code]?.active) });
 }
+
+// ------------------------------------------------- territories overlay --
+
+function hashColor(id, province) {
+  const base = PROVINCE_COLORS[province] || '#9fb4c2';
+  let n = 0;
+  for (const c of id) n = (n * 31 + c.charCodeAt(0)) >>> 0;
+  const palette = [base, '#5ef0ff', '#ffd166', '#b5e48c', '#ff9f68', '#c77dff', '#7b9cff', '#f72585'];
+  return palette[n % palette.length];
+}
+
+function bboxCenter(geometry) {
+  let [w, s, e, n] = [180, 90, -180, -90];
+  const polys = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+  let best = null;
+  let bestLen = 0;
+  for (const p of polys) if (p[0].length > bestLen) [best, bestLen] = [p[0], p[0].length];
+  for (const [x, y] of best || []) {
+    w = Math.min(w, x);
+    e = Math.max(e, x);
+    s = Math.min(s, y);
+    n = Math.max(n, y);
+  }
+  return [(w + e) / 2, (s + n) / 2];
+}
+
+async function loadTerritories() {
+  try {
+    const [terr, provs] = await Promise.all([
+      fetch('/api/territories').then((r) => r.json()),
+      fetch('/data/provinces.geojson').then((r) => r.json()),
+    ]);
+    for (const f of terr.features) f.properties.color = hashColor(f.properties.id, f.properties.province);
+    map.getSource('territories')?.setData(terr);
+    const labels = [];
+    for (const f of terr.features)
+      labels.push({ type: 'Feature', properties: { name: f.properties.name + (f.properties.monitored ? '' : ' ·'), color: f.properties.color, rank: 2 }, geometry: { type: 'Point', coordinates: bboxCenter(f.geometry) } });
+    for (const f of provs.features) {
+      const code = f.properties.code;
+      if (!DEFAULT_UTILITY_LABEL[code]) continue;
+      labels.push({ type: 'Feature', properties: { name: DEFAULT_UTILITY_LABEL[code], color: PROVINCE_COLORS[code], rank: 1 }, geometry: { type: 'Point', coordinates: bboxCenter(f.geometry) } });
+    }
+    map.getSource('terr-labels')?.setData({ type: 'FeatureCollection', features: labels });
+  } catch (error) {
+    console.warn('[map] territories unavailable', error);
+  }
+}
+
+// ------------------------------------------------- ISP-in-view overlay --
+
+let ispSeq = 0;
+const loadIspInView = debounce(async () => {
+  if (!state.layers.isp) return;
+  const card = $('isp-card');
+  card.hidden = false;
+  card.textContent = '';
+  const z = map.getZoom();
+  if (z < 7.5) {
+    card.append(h('h3', { text: 'Internet providers in view' }), h('p', { class: 'hint', text: 'Zoom in to a city or region to list providers.' }));
+    map.getSource('isp-hex')?.setData(empty());
+    return;
+  }
+  const b = map.getBounds();
+  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((v) => v.toFixed(4)).join(',');
+  const seq = ++ispSeq;
+  card.append(h('h3', { text: 'Internet providers in view' }), h('p', { class: 'hint' }, h('span', { class: 'spinner' }), ' Checking the National Broadband Map…'));
+  try {
+    const res = await fetch(`/api/isp/area?bbox=${bbox}`);
+    const data = await res.json();
+    if (seq !== ispSeq) return;
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    card.textContent = '';
+    card.append(h('h3', { text: 'Internet providers in view' }));
+    if (data.error && !data.providers.length) card.append(h('p', { class: 'hint', text: `Lookup failed: ${data.error}` }));
+    const max = Math.max(1, ...data.providers.map((p) => p.hexes));
+    card.append(
+      h('ul', {}, data.providers.slice(0, 18).map((p) =>
+        h('li', { title: p.techs.join(', ') },
+          h('span', {}, p.name, h('div', { class: 'bar', style: `width:${Math.round((p.hexes / max) * 100)}%` })),
+          h('small', { text: p.techs.filter((t) => !/Mobile/.test(t)).slice(0, 2).join(', ') || p.techs[0] || '' }),
+        ),
+      )),
+      h('p', { class: 'hint', text: `${data.sampled} areas sampled. Source: ISED National Broadband Map.` }),
+    );
+    map.getSource('isp-hex')?.setData({
+      type: 'FeatureCollection',
+      features: data.hexes.filter((x) => x.polygon?.length > 3).map((x) => ({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [x.polygon] } })),
+    });
+  } catch (error) {
+    if (seq !== ispSeq) return;
+    card.textContent = '';
+    card.append(h('h3', { text: 'Internet providers in view' }), h('p', { class: 'hint', text: `Lookup failed: ${error.message}` }));
+  }
+}, 700);
+map.on('moveend', () => {
+  if (state.layers.isp) loadIspInView();
+});
 
 // --------------------------------------------------------------- popups --
 
 function openPopup(lngLat, content) {
   popup?.remove();
-  popup = new maplibregl.Popup({ maxWidth: '340px', focusAfterOpen: false })
-    .setLngLat(lngLat)
-    .setDOMContent(content)
-    .addTo(map);
+  popup = new maplibregl.Popup({ maxWidth: '340px', focusAfterOpen: false }).setLngLat(lngLat).setDOMContent(content).addTo(map);
 }
 
 function outagePopup(r) {
@@ -447,21 +628,17 @@ function outagePopup(r) {
     ['Area', r.area],
     ['Cause', r.cause],
     ['Status', r.status],
-    [r.kind === 'planned-upcoming' ? 'Starts' : 'Started', mt(r.startMs)],
+    [r.kind === 'planned-upcoming' ? 'Starts' : 'Started', when(r.startMs, r.province)],
     ['Out for', r.kind === 'planned-upcoming' ? null : duration(r.startMs)],
-    ['Est. restore', mt(r.estRestoreMs) || r.estRestoreText],
+    ['Est. restore', when(r.estRestoreMs, r.province) || r.estRestoreText],
     ['Utility update', r.updatedMs ? ago(r.updatedMs) : null],
   ].filter(([, v]) => v);
   const source = state.snap.sources.find((s) => s.id === r.utility);
-  return h(
-    'div',
-    { class: 'pop' },
+  return h('div', { class: 'pop' },
     h('div', { class: 'pop-kind', style: `color:${COLORS[r.kind]}`, text: KIND_TEXT[r.kind] }),
-    h('h4', { text: UTILITY[r.utility] || r.utility }),
+    h('h4', { text: `${utilityName(r.utility)} · ${r.province}` }),
     h('dl', {}, rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])),
-    source?.map && source.map.startsWith('http')
-      ? h('div', { class: 'pop-actions' }, h('a', { class: 'btn', href: source.map, target: '_blank', rel: 'noopener', text: `Open ${SHORT[r.utility]}'s map` }))
-      : null,
+    source?.map?.startsWith('http') ? h('div', { class: 'pop-actions' }, h('a', { class: 'btn', href: source.map, target: '_blank', rel: 'noopener', text: `Open ${source.name}'s map` })) : null,
   );
 }
 
@@ -470,27 +647,27 @@ function sitePopup(s) {
   const rowsById = new Map(state.snap.rows.map((r) => [r.stableId, r]));
   const hits = impact.outages.map((o) => {
     const r = rowsById.get(o.id);
-    const what = r ? `${UTILITY[r.utility]}, ${customersText(r)} customers` : o.id;
+    const what = r ? `${utilityName(r.utility)}, ${customersText(r)} customers` : o.id;
     const where = o.relation === 'inside' ? 'site is inside the outage area' : `${o.distanceKm} km away`;
-    const when = r?.kind === 'planned-upcoming' ? `, starts ${mt(r.startMs)}` : '';
-    return h('li', { text: `${KIND_TEXT[o.kind]}: ${what}; ${where}${when}` });
+    const starts = r?.kind === 'planned-upcoming' ? `, starts ${when(r.startMs, r.province)}` : '';
+    return h('li', { text: `${KIND_TEXT[o.kind]}: ${what}; ${where}${starts}` });
   });
   const internet = impact.internet ? state.snap.internet.provinces[impact.province] : null;
-  return h(
-    'div',
-    { class: 'pop' },
+  const u = impact.utility;
+  return h('div', { class: 'pop' },
     h('span', { class: `status status-${impact.status}`, text: SITE_STATUS_TEXT[impact.status] }),
     h('h4', { text: s.name }),
     s.address ? h('div', { class: 'item-meta', text: s.address }) : null,
-    hits.length ? h('ul', { style: 'margin:8px 0 0;padding-left:18px;font-size:13px' }, hits) : null,
-    internet
-      ? h('p', { style: 'margin:8px 0 0;font-size:13px;color:#c7b8ff', text: `Internet connectivity in ${PROVINCE_NAMES[impact.province]} dropped ${ago(internet.since)} (IODA). Province-wide signal, not site-specific.` })
-      : null,
-    impact.status === 'no-coverage'
-      ? h('p', { style: 'margin:8px 0 0;font-size:13px;color:#8fa1b3', text: `Power outages aren't monitored in ${PROVINCE_NAMES[impact.province] || 'this area'} yet.` })
-      : null,
-    s.notes ? h('p', { style: 'margin:8px 0 0;font-size:13px', text: s.notes }) : null,
-    h('div', { class: 'pop-actions' }, h('button', { class: 'btn', type: 'button', text: 'Edit site', onclick: () => openSiteForm(s) })),
+    h('dl', { style: 'margin-top:8px' },
+      h('dt', { text: 'Power' }), h('dd', { text: u ? `${u.name}${u.monitored ? '' : ' (not monitored)'}` : 'unknown' }),
+      h('dt', { text: 'Internet' }), h('dd', { text: s.isp || 'not set' }),
+    ),
+    hits.length ? h('ul', {}, hits) : null,
+    impact.network ? h('p', { style: 'color:#c7b8ff', text: `${impact.network.name}'s network shows a drop since ${LOCAL.format(new Date(impact.network.since))} (IODA ${impact.network.signals.join(', ')}). National network signal, may not be this site.` }) : null,
+    internet ? h('p', { style: 'color:#c7b8ff', text: `Internet connectivity across ${PROVINCE_NAMES[impact.province]} dropped ${ago(internet.since)} (IODA). Province-wide, not site-specific.` }) : null,
+    impact.status === 'no-coverage' ? h('p', { style: 'color:#9fb4c2', text: u && !u.monitored ? `${u.name} publishes no live outage map, so this site cannot be checked automatically.` : `Power outages aren't monitored in ${PROVINCE_NAMES[impact.province] || 'this area'}.` }) : null,
+    s.notes ? h('p', { text: s.notes }) : null,
+    h('div', { class: 'pop-actions' }, h('button', { class: 'btn', type: 'button', text: 'Edit client', onclick: () => openSitePanel(s) })),
   );
 }
 
@@ -506,7 +683,7 @@ function selectOutage(id, { fly = true, lngLat = null } = {}) {
   state.selectedId = id;
   state.selectedSiteId = null;
   if (fly) {
-    if (r.polygons.length) map.fitBounds(boundsOf(r.polygons), { padding: 80, maxZoom: 13, duration: 900 });
+    if (r.polygons.length) map.fitBounds(boundsOf(r.polygons), { padding: 120, maxZoom: 13, duration: 900 });
     else map.flyTo({ center: [r.point.lon, r.point.lat], zoom: Math.max(map.getZoom(), 11), duration: 900 });
   }
   openPopup(lngLat || [r.point.lon, r.point.lat], outagePopup(r));
@@ -521,84 +698,89 @@ function selectSite(id, { fly = true } = {}) {
   state.selectedId = null;
   if (fly) map.flyTo({ center: [s.lon, s.lat], zoom: Math.max(map.getZoom(), 11), duration: 900 });
   openPopup([s.lon, s.lat], sitePopup(s));
-  renderMap();
   renderSiteList();
 }
 
-// ------------------------------------------------------------- top + KPIs --
+// ------------------------------------------------------------ top HUD --
 
 function renderTop() {
   const s = state.snap;
-  const lamps = $('lamps');
-  lamps.textContent = '';
-  for (const src of s.sources) {
-    lamps.append(
-      h(
-        'li',
-        { class: 'lamp', dataset: { status: src.status }, title: `${src.name} (${src.region}): ${statusWord(src.status)}, last good data ${ago(src.lastSuccessAt)}${src.error ? `. ${src.error}` : ''}` },
-        h('span', { class: 'lamp-dot', 'aria-hidden': 'true' }),
-        h('b', { text: SHORT[src.id] || src.name }),
-        src.status === 'ok' ? null : statusWord(src.status),
-      ),
-    );
-  }
-  if (s.internet?.status && s.internet.status !== 'off') {
-    lamps.append(h('li', { class: 'lamp-sep', 'aria-hidden': 'true' }));
-    lamps.append(
-      h(
-        'li',
-        { class: 'lamp', dataset: { status: s.internet.status }, title: `IODA internet signals: ${statusWord(s.internet.status)}${s.internet.error ? `. ${s.internet.error}` : ''}` },
-        h('span', { class: 'lamp-dot', 'aria-hidden': 'true' }),
-        h('b', { text: 'Internet' }),
-        s.internet.status === 'ok' ? null : statusWord(s.internet.status),
-      ),
-    );
-  }
   $('demo-badge').hidden = !s.demo;
-
   const t = s.totals;
-  const k = $('k-customers');
   const down = s.sources.filter((x) => x.status === 'down');
+  const stale = s.sources.filter((x) => x.status === 'stale');
   const noData = down.length === s.sources.length;
+  const k = $('k-customers');
   k.textContent = noData ? 'No data' : fmt(t.customersOut);
-  k.classList.toggle('has-out', !noData && t.customersOut > 0);
   k.classList.toggle('no-data', noData);
-  $('k-label').textContent = noData
-    ? 'every utility feed is down; see Sources'
-    : down.length
-      ? `customers without power; ${down.map((x) => SHORT[x.id] || x.name).join(' and ')} feed down, not counted`
-      : 'customers without power';
+  k.classList.toggle('zero', !noData && t.customersOut === 0);
+  $('k-label').textContent = noData ? 'feeds down' : 'customers out';
+  $('kpi-out').classList.toggle('alert', !noData && t.bigOutages > 0);
   const n = (v) => (noData ? '–' : fmt(v));
   $('k-unplanned').textContent = n(t.outages);
   $('k-planned').textContent = n(t.plannedActive);
-  $('k-clients').textContent = t.sitesTotal ? `${t.sitesAffected} / ${t.sitesTotal}` : '0';
-  $('k-clients').parentElement.classList.toggle('alert', t.sitesAffected > 0);
-  $('k-internet').textContent = s.internet?.status === 'down' ? '–' : fmt(t.internetAlerts);
-  $('k-internet').parentElement.classList.toggle('alert', t.internetAlerts > 0);
-  $('c-outages').textContent = String(t.outages + t.plannedActive);
+  $('k-clients').textContent = t.sitesTotal ? `${t.sitesAffected}/${t.sitesTotal}` : '0';
+  $('kpi-clients').classList.toggle('alert', t.sitesAffected > 0);
+  const netAlerts = (t.internetAlerts || 0) + (t.networkAlerts || 0);
+  $('k-internet').textContent = s.internet?.status === 'down' ? '–' : fmt(netAlerts);
+  $('kpi-net').classList.toggle('alert', netAlerts > 0);
+  const live = s.sources.length - down.length - stale.length;
+  $('feeds-dot').dataset.status = down.length ? 'down' : stale.length ? 'stale' : 'ok';
+  $('feeds-text').textContent = `${live}/${s.sources.length} live`;
+  $('btn-feeds').title = down.length ? `Down: ${down.map((x) => x.name).join(', ')}` : 'All utility feeds answering';
+  $('c-outages').textContent = String(t.outages + t.plannedActive || '');
   $('c-clients').textContent = t.sitesAffected ? String(t.sitesAffected) : '';
   stampUpdated();
 }
-const statusWord = (s) => ({ ok: 'live', stale: 'stale', down: 'down', off: 'off' })[s] || s;
 
 function stampUpdated() {
   const el = $('updated');
   if (!state.lastOkAt) return;
   const late = Date.now() - state.lastOkAt > LATE_MS;
-  el.classList.toggle('late', late);
-  el.textContent = late
-    ? `Not updating, last data ${ago(state.lastOkAt)}`
-    : `Updated ${ago(state.snap?.fetchedAt)}`;
+  $('btn-feeds').classList.toggle('late', late);
+  el.textContent = late ? `not updating, ${ago(state.lastOkAt)}` : ago(state.snap?.fetchedAt);
 }
 
+// --------------------------------------------------------------- panels --
+
+const PANEL_TITLES = { outages: 'Outages', clients: 'Client sites', layers: 'Layers', sources: 'Sources', history: 'Last 24 hours' };
+function openPanel(name) {
+  if (state.panel === name) name = null;
+  state.panel = name;
+  $('panel').hidden = !name;
+  for (const b of document.querySelectorAll('.dock-btn')) b.setAttribute('aria-pressed', String(b.dataset.panel === name));
+  for (const v of Object.keys(PANEL_TITLES)) $(`view-${v}`).hidden = v !== name;
+  if (name) $('panel-title').textContent = PANEL_TITLES[name];
+  if (name === 'history') loadHistory();
+  local.set('panel', name || '');
+}
+for (const b of document.querySelectorAll('.dock-btn')) b.addEventListener('click', () => openPanel(b.dataset.panel));
+$('panel-close').addEventListener('click', () => openPanel(null));
+$('btn-feeds').addEventListener('click', () => openPanel('sources'));
+$('kpi-clients').addEventListener('click', () => openPanel('clients'));
+
 // ---------------------------------------------------------- outage list --
+
+function renderProvinceFilter() {
+  const sel = $('prov-filter');
+  const have = new Set(Object.keys(state.snap.coverage || {}));
+  if (sel.options.length > 1) return;
+  for (const code of PROVINCE_ORDER) if (have.has(code)) sel.append(h('option', { value: code, text: PROVINCE_NAMES[code] }));
+  sel.value = state.province;
+}
+$('prov-filter').addEventListener('change', (e) => {
+  state.province = e.target.value;
+  local.set('provFilter', state.province);
+  renderOutageList();
+  renderMap();
+});
 
 function renderOutageList() {
   const list = $('outage-list');
   const q = state.search.trim().toLowerCase();
   const order = { unplanned: 0, 'planned-active': 1, 'planned-upcoming': 2 };
   const rows = visibleRows()
-    .filter((r) => !q || [r.area, r.cause, r.status, UTILITY[r.utility]].some((v) => v && v.toLowerCase().includes(q)))
+    .filter((r) => !q || [r.area, r.cause, r.status, utilityName(r.utility), PROVINCE_NAMES[r.province]].some((v) => v && v.toLowerCase().includes(q)))
     .sort((a, b) =>
       a.kind === 'planned-upcoming' && b.kind === 'planned-upcoming'
         ? (a.startMs ?? 0) - (b.startMs ?? 0)
@@ -607,75 +789,66 @@ function renderOutageList() {
   list.textContent = '';
   if (!rows.length) {
     const live = state.snap.sources.filter((s) => s.status !== 'down').length;
-    list.append(
-      h('li', { class: 'empty' },
-        h('p', { text: q ? 'Nothing matches that filter.' : 'No outages reported right now.' }),
-        q ? null : h('p', { text: `${live} of ${state.snap.sources.length} utility feeds are answering. Check the Sources tab if one is down.` }),
-      ),
-    );
+    list.append(h('li', { class: 'empty' },
+      h('p', { text: q || state.province ? 'Nothing matches that filter.' : 'No outages reported right now.' }),
+      h('p', { text: `${live} of ${state.snap.sources.length} utility feeds are answering.` }),
+    ));
     return;
   }
-  for (const r of rows) {
-    const when =
-      r.kind === 'planned-upcoming'
-        ? `Starts ${mt(r.startMs) || 'soon'}`
-        : r.startMs
-          ? `Out ${duration(r.startMs)}`
-          : r.status || '';
-    list.append(
-      h('li', {},
-        h('button', {
-          type: 'button',
-          class: `item${r.stableId === state.selectedId ? ' active' : ''}`,
-          dataset: { kind: r.kind },
-          onclick: () => selectOutage(r.stableId),
-        },
-          h('span', { class: 'item-bar', 'aria-hidden': 'true' }),
-          h('span', {},
-            h('span', { class: 'item-title', text: placeName(r) }),
-            h('span', { class: 'item-meta', text: [UTILITY[r.utility], when].filter(Boolean).join(', ') }),
-          ),
-          h('span', { class: 'item-num' }, customersText(r), h('small', { text: 'customers' })),
+  for (const r of rows.slice(0, 400)) {
+    const t = r.kind === 'planned-upcoming' ? `Starts ${when(r.startMs, r.province) || 'soon'}` : r.startMs ? `Out ${duration(r.startMs)}` : r.status || '';
+    list.append(h('li', {},
+      h('button', { type: 'button', class: `item${r.stableId === state.selectedId ? ' active' : ''}`, dataset: { kind: r.kind }, onclick: () => selectOutage(r.stableId) },
+        h('span', { class: 'item-bar', 'aria-hidden': 'true' }),
+        h('span', {},
+          h('span', { class: 'item-title' }, h('span', { class: 'prov-tag', text: r.province }), placeName(r)),
+          h('span', { class: 'item-meta', text: [utilityName(r.utility), t].filter(Boolean).join(' · ') }),
         ),
+        h('span', { class: 'item-num' }, customersText(r), h('small', { text: 'customers' })),
       ),
-    );
+    ));
   }
 }
 
 // ------------------------------------------------------------ site list --
+
+function siteMeta(s) {
+  const first = s.impact.outages[0];
+  const u = s.impact.utility;
+  if (first && s.impact.status !== 'planned') return first.relation === 'inside' ? `Inside a ${utilityName(first.utility)} outage` : `${first.distanceKm} km from a ${utilityName(first.utility)} outage`;
+  if (s.impact.status === 'planned' && first) {
+    const r = state.snap.rows.find((x) => x.stableId === first.id);
+    return `Planned work ${first.distanceKm} km away, starts ${when(r?.startMs, r?.province) || 'soon'}`;
+  }
+  if (s.impact.status === 'internet') return s.impact.network ? `${s.impact.network.name} network drop` : `Internet drop across ${PROVINCE_NAMES[s.impact.province]}`;
+  return [u?.name, s.isp].filter(Boolean).join(' · ') || s.address || '';
+}
 
 function renderSiteList() {
   const list = $('site-list');
   const sites = state.snap.sites;
   list.textContent = '';
   $('sites-empty').hidden = sites.length > 0;
-  for (const s of sites) {
-    const first = s.impact.outages[0];
-    let detail = s.address || '';
-    if (first && s.impact.status !== 'planned')
-      detail = first.relation === 'inside' ? 'Inside the outage area' : `${first.distanceKm} km from the outage`;
-    else if (s.impact.status === 'planned' && first) {
-      const r = state.snap.rows.find((x) => x.stableId === first.id);
-      detail = `Planned work ${first.distanceKm} km away, starts ${mt(r?.startMs) || 'soon'}`;
-    }
-    list.append(
-      h('li', {},
-        h('button', {
-          type: 'button',
-          class: `item${s.id === state.selectedSiteId ? ' active' : ''}`,
-          dataset: { status: s.impact.status },
-          onclick: () => selectSite(s.id),
-        },
-          h('span', { class: 'item-bar', 'aria-hidden': 'true' }),
-          h('span', {},
-            h('span', { class: 'item-title', text: s.name }),
-            h('span', { class: 'item-meta', text: detail }),
-          ),
-          h('span', {}, h('span', { class: `status status-${s.impact.status}`, text: SITE_STATUS_TEXT[s.impact.status] })),
+  for (const s of sites)
+    list.append(h('li', {},
+      h('button', { type: 'button', class: `item${s.id === state.selectedSiteId ? ' active' : ''}`, dataset: { status: s.impact.status }, onclick: () => selectSite(s.id) },
+        h('span', { class: 'item-bar', 'aria-hidden': 'true' }),
+        h('span', {},
+          h('span', { class: 'item-title' }, s.impact.province ? h('span', { class: 'prov-tag', text: s.impact.province }) : null, s.name),
+          h('span', { class: 'item-meta', text: siteMeta(s) }),
         ),
+        h('span', {}, h('span', { class: `status status-${s.impact.status}`, text: SITE_STATUS_TEXT[s.impact.status] })),
       ),
-    );
-  }
+    ));
+  renderTvFeed();
+}
+
+function renderTvFeed() {
+  const feed = $('tv-feed');
+  feed.textContent = '';
+  const bad = state.snap.sites.filter((s) => ['out', 'near', 'internet', 'planned'].includes(s.impact.status));
+  if (!bad.length) feed.append(h('div', { class: 'tv-row', dataset: { status: 'ok' } }, h('b', { text: 'All client sites clear' }), h('span', { text: `${state.snap.sites.length} sites watched` })));
+  for (const s of bad.slice(0, 8)) feed.append(h('div', { class: 'tv-row', dataset: { status: s.impact.status } }, h('b', { text: s.name }), h('span', { text: siteMeta(s) })));
 }
 
 // --------------------------------------------------------------- sources --
@@ -686,65 +859,49 @@ function renderSources() {
   list.textContent = '';
   const card = (src, lines) =>
     h('li', { class: 'source', dataset: { status: src.status } },
-      h('div', { class: 'source-head' },
-        h('span', { class: 'lamp-dot', 'aria-hidden': 'true' }),
-        h('b', { text: src.name }),
-        h('span', { class: 'source-state', text: statusWord(src.status) }),
-      ),
+      h('div', { class: 'source-head' }, h('span', { class: 'lamp-dot', 'aria-hidden': 'true' }), h('b', { text: src.name }), h('span', { class: 'source-state', text: statusWord(src.status) })),
       ...lines.filter(Boolean),
     );
-  for (const src of s.sources) {
-    list.append(
-      card(src, [
+  for (const code of PROVINCE_ORDER) {
+    const srcs = s.sources.filter((x) => x.province === code);
+    if (!srcs.length) continue;
+    list.append(h('li', { class: 'prov-head', text: PROVINCE_NAMES[code] }));
+    for (const src of srcs)
+      list.append(card(src, [
         h('p', { text: src.region }),
         h('p', { text: `${fmt(src.outages)} unplanned, ${fmt(src.plannedActive)} planned now, ${fmt(src.customersOut)} customers out. Last good data ${ago(src.lastSuccessAt)}.` }),
         src.status === 'stale' ? h('p', { text: 'Showing its last good data while the feed is failing; dropped after 30 minutes.' }) : null,
         src.error ? h('p', { class: 'source-error', text: `Last error: ${src.error}` }) : null,
         src.map?.startsWith('http') ? h('p', {}, h('a', { href: src.map, target: '_blank', rel: 'noopener', text: `Open ${src.name}'s own outage map` })) : null,
-      ]),
-    );
+      ]));
   }
   if (s.internet && s.internet.status !== 'off') {
     const active = Object.values(s.internet.provinces || {}).filter((p) => p.active);
-    list.append(
-      card(s.internet, [
-        h('p', { text: s.internet.region }),
-        h('p', {
-          text: active.length
-            ? `Disruption now: ${active.map((p) => `${PROVINCE_NAMES[p.code]} (since ${LOCAL.format(new Date(p.since))}, ${p.signals.join(' and ')})`).join('; ')}.`
-            : 'No province-level internet disruption right now.',
-        }),
-        h('p', { text: 'A province-wide drop in measured connectivity, not a specific provider or town. Data: IODA, Georgia Tech.' }),
-        s.internet.error ? h('p', { class: 'source-error', text: `Last error: ${s.internet.error}` }) : null,
-        s.internet.map?.startsWith('http') ? h('p', {}, h('a', { href: s.internet.map, target: '_blank', rel: 'noopener', text: 'Open the IODA dashboard for Canada' })) : null,
-      ]),
-    );
+    const nets = Object.values(s.internet.networks || {}).filter((n) => n.active);
+    list.append(h('li', { class: 'prov-head', text: 'Internet' }));
+    list.append(card(s.internet, [
+      h('p', { text: active.length ? `Province-wide drop now: ${active.map((p) => `${PROVINCE_NAMES[p.code]} (since ${LOCAL.format(new Date(p.since))})`).join('; ')}.` : 'No province-wide internet drop right now.' }),
+      h('p', { text: nets.length ? `Provider networks dropping: ${nets.map((n) => `${n.name} (AS${n.asn}, since ${LOCAL.format(new Date(n.since))})`).join('; ')}.` : `Watching ${Object.keys(s.internet.networks || {}).length} provider networks (Bell, Rogers, Shaw, Telus, SaskTel, Eastlink, Cogeco…): all normal.` }),
+      s.internet.networksError ? h('p', { class: 'source-error', text: `Provider networks: ${s.internet.networksError}` }) : null,
+      s.internet.error ? h('p', { class: 'source-error', text: `Last error: ${s.internet.error}` }) : null,
+      h('p', { text: 'Data: IODA, Georgia Tech. Measured connectivity, not provider status pages.' }),
+    ]));
   }
   const cov = $('coverage');
   cov.textContent = '';
-  const monitored = Object.values(s.coverage || {});
-  const missing = Object.keys(PROVINCE_NAMES).filter((c) => !s.coverage?.[c]);
-  cov.append(
-    h('h3', { text: 'What is monitored' }),
-    h('p', { text: `Power: ${monitored.map((c) => c.name).join(', ') || 'none'}. Darkened provinces on the map have no power feed yet; client sites there show "Power not monitored here".` }),
-  );
-  for (const c of monitored)
-    if (c.unmonitored?.length)
-      cov.append(
-        h('p', { text: `Not covered in ${c.name} (no live feed published):` }),
-        h('ul', {}, c.unmonitored.map((u) => h('li', { text: u }))),
-      );
-  cov.append(h('p', { text: `No power data yet: ${missing.map((c) => PROVINCE_NAMES[c]).join(', ')}.` }));
+  cov.append(h('h3', { text: 'Not covered' }));
+  for (const code of PROVINCE_ORDER) {
+    const c = s.coverage?.[code];
+    if (c?.unmonitored?.length) cov.append(h('p', { text: `${c.name}:` }), h('ul', {}, c.unmonitored.map((u) => h('li', { text: u }))));
+  }
+  cov.append(h('p', { text: 'Quebec and the territories are not monitored.' }));
 }
 
 // --------------------------------------------------------------- history --
 
 async function loadHistory() {
   try {
-    const [hist, ev] = await Promise.all([
-      fetch('/api/history?hours=24').then((r) => r.json()),
-      fetch('/api/events?limit=80').then((r) => r.json()),
-    ]);
+    const [hist, ev] = await Promise.all([fetch('/api/history?hours=24').then((r) => r.json()), fetch('/api/events?limit=80').then((r) => r.json())]);
     state.history = (hist.points || []).slice().sort((a, b) => a.t - b.t);
     state.events = ev.events || [];
     renderHistory();
@@ -759,18 +916,28 @@ function renderHistory() {
   box.textContent = '';
   const legend = $('chart-legend');
   legend.textContent = '';
+  const provOf = new Map((state.snap?.sources || []).map((s) => [s.id, s.province]));
   if (pts.length < 2) {
     box.append(h('p', { class: 'empty', text: 'The chart fills in as the server records a point every 5 minutes.' }));
   } else {
-    const ids = Object.keys(CHART_COLORS);
+    const ids = PROVINCE_ORDER;
+    const byProv = (p) => {
+      const out = Object.fromEntries(ids.map((c) => [c, 0]));
+      for (const [id, v] of Object.entries(p.bySource || {})) {
+        const c = provOf.get(id) || 'AB';
+        if (c in out) out[c] += v ?? 0;
+      }
+      return out;
+    };
     const W = Math.max(280, box.clientWidth || 360);
     const H = 180;
-    const pad = { l: 40, r: 8, t: 8, b: 22 };
+    const pad = { l: 44, r: 8, t: 8, b: 22 };
     const t0 = pts[0].t;
     const t1 = pts[pts.length - 1].t;
     const stacks = pts.map((p) => {
+      const v = byProv(p);
       let acc = 0;
-      return ids.map((id) => (acc += p.bySource?.[id] ?? 0));
+      return ids.map((id) => (acc += v[id]));
     });
     const max = Math.max(10, ...stacks.map((s) => s[s.length - 1]));
     const step = 10 ** Math.floor(Math.log10(max));
@@ -787,22 +954,21 @@ function renderHistory() {
       return e;
     };
     for (const v of [0, top / 2, top]) {
-      el('line', { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), stroke: '#2b3947' });
-      el('text', { x: pad.l - 6, y: y(v) + 4, 'text-anchor': 'end', fill: '#8fa1b3', 'font-size': 11 }).textContent = fmt(v);
+      el('line', { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), stroke: 'rgba(159,180,194,0.18)' });
+      el('text', { x: pad.l - 6, y: y(v) + 4, 'text-anchor': 'end', fill: '#9fb4c2', 'font-size': 11 }).textContent = fmt(v);
     }
     for (let i = ids.length - 1; i >= 0; i--) {
       const upper = pts.map((p, j) => `${x(p.t)},${y(stacks[j][i])}`);
       const lower = pts.map((p, j) => `${x(p.t)},${y(i ? stacks[j][i - 1] : 0)}`).reverse();
-      el('polygon', { points: [...upper, ...lower].join(' '), fill: CHART_COLORS[ids[i]], 'fill-opacity': 0.85 });
+      el('polygon', { points: [...upper, ...lower].join(' '), fill: PROVINCE_COLORS[ids[i]], 'fill-opacity': 0.8 });
     }
     const hours = (t1 - t0) / 3600_000;
     const tickEvery = hours > 12 ? 6 : hours > 4 ? 2 : 1;
     const first = Math.ceil(t0 / (tickEvery * 3600_000)) * tickEvery * 3600_000;
     for (let t = first; t <= t1; t += tickEvery * 3600_000)
-      el('text', { x: x(t), y: H - 6, 'text-anchor': 'middle', fill: '#8fa1b3', 'font-size': 11 }).textContent = LOCAL.format(new Date(t));
+      el('text', { x: x(t), y: H - 6, 'text-anchor': 'middle', fill: '#9fb4c2', 'font-size': 11 }).textContent = LOCAL.format(new Date(t));
     box.append(svg);
-    for (const id of ids)
-      legend.append(h('span', {}, h('i', { style: `background:${CHART_COLORS[id]}` }), UTILITY[id]));
+    for (const id of ids) legend.append(h('span', {}, h('i', { style: `background:${PROVINCE_COLORS[id]}` }), id));
   }
 
   const list = $('events');
@@ -811,7 +977,7 @@ function renderHistory() {
   for (const e of state.events) {
     let cls = '';
     let text = '';
-    const who = UTILITY[e.utility] || e.utility;
+    const who = utilityName(e.utility);
     const where = e.area || 'unnamed area';
     const cust = Number.isFinite(e.customers) ? `, ${fmt(e.customers)} customers` : '';
     if (e.type === 'outage-started') [cls, text] = ['ev-start', `Outage started: ${who}, ${where}${cust}`];
@@ -860,12 +1026,12 @@ function checkAlerts() {
     for (const site of s.sites) {
       const before = state.prevSiteStatus.get(site.id);
       const after = site.impact.status;
-      if (before !== undefined && before !== after && bad.has(after)) notify(`${site.name}: ${SITE_STATUS_TEXT[after]}`, site.address || '', 'bad');
+      if (before !== undefined && before !== after && bad.has(after)) notify(`${site.name}: ${SITE_STATUS_TEXT[after]}`, siteMeta(site), 'bad');
       if (before !== undefined && bad.has(before) && !bad.has(after)) notify(`${site.name}: clear`, SITE_STATUS_TEXT[after]);
     }
     for (const r of s.rows)
       if (r.kind === 'unplanned' && (r.customers ?? 0) >= 1000 && !state.prevOutageIds.has(r.stableId))
-        notify(`Large outage: ${fmt(r.customers)} customers`, `${UTILITY[r.utility]}, ${placeName(r)}`, 'bad');
+        notify(`Large outage: ${fmt(r.customers)} customers`, `${utilityName(r.utility)}, ${placeName(r)}`, 'bad');
   }
   state.prevSiteStatus = now;
   state.prevOutageIds = outageIds;
@@ -890,13 +1056,58 @@ function renderAlertButton() {
 }
 $('btn-alerts').addEventListener('click', async () => {
   state.alerts = !state.alerts;
-  store.set('alerts', state.alerts ? 'on' : 'off');
+  local.set('alerts', state.alerts ? 'on' : 'off');
   if (state.alerts) {
     beep();
     if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
     toast('Alerts on', 'You will hear a tone when a client site is hit, and see a desktop notice if allowed.');
   }
   renderAlertButton();
+});
+
+// ------------------------------------------------------- place search --
+
+function attachSuggest(input, listEl, onPick) {
+  let seq = 0;
+  let results = [];
+  const close = () => {
+    listEl.hidden = true;
+  };
+  const run = debounce(async () => {
+    const q = input.value.trim();
+    if (q.length < 3) return close();
+    const my = ++seq;
+    try {
+      const r = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`).then((x) => x.json());
+      if (my !== seq) return;
+      results = r.results || [];
+      listEl.textContent = '';
+      if (!results.length) listEl.append(h('li', {}, h('button', { type: 'button', disabled: true, text: r.error || 'No matches in Canada' })));
+      for (const p of results)
+        listEl.append(h('li', {}, h('button', { type: 'button', onclick: () => {
+          close();
+          onPick(p);
+        } }, p.label || p.full, h('small', { text: p.full }))));
+      listEl.hidden = false;
+    } catch {
+      close();
+    }
+  }, 450);
+  input.addEventListener('input', run);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') close();
+    if (e.key === 'Enter' && results[0] && !listEl.hidden) {
+      e.preventDefault();
+      close();
+      onPick(results[0]);
+    }
+  });
+  input.addEventListener('blur', () => setTimeout(close, 200));
+}
+attachSuggest($('go-search'), $('go-suggest'), (p) => map.flyTo({ center: [p.lon, p.lat], zoom: p.precise ? 15 : 12, duration: 1200 }));
+attachSuggest($('addr-search'), $('addr-suggest'), (p) => {
+  placeDraft(p.lat, p.lon, p);
+  map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), p.precise ? 15 : 12), duration: 900 });
 });
 
 // ----------------------------------------------------------- site editing --
@@ -910,7 +1121,7 @@ async function api(method, url, body, type = 'application/json') {
     const code = window.prompt('Enter the edit code to change client sites:');
     if (code) {
       state.editToken = code;
-      store.set('editToken', code);
+      local.set('editToken', code);
       return api(method, url, body, type);
     }
   }
@@ -918,55 +1129,155 @@ async function api(method, url, body, type = 'application/json') {
   return data;
 }
 
-function startPicking() {
-  state.picking = true;
-  state.editingSiteId = null;
-  $('add-hint').hidden = false;
-  $('site-form').hidden = true;
-  document.body.classList.add('map-picking');
-  map.getCanvas().style.cursor = 'crosshair';
-  popup?.remove();
-}
-function stopPicking() {
-  state.picking = false;
-  $('add-hint').hidden = true;
-  document.body.classList.remove('map-picking');
-  map.getCanvas().style.cursor = '';
-}
-function finishPicking(lngLat) {
-  stopPicking();
-  openSiteForm(null, lngLat);
+function setPicking(on) {
+  state.picking = on;
+  $('pick-banner').hidden = !on;
+  document.body.classList.toggle('map-picking', on);
+  map.getCanvas().style.cursor = on ? 'crosshair' : '';
 }
 
-function openSiteForm(site, lngLat = null) {
-  setTab('clients');
+function openSitePanel(site = null) {
   popup?.remove();
+  state.editingSiteId = site?.id || null;
+  $('site-panel').hidden = false;
+  $('site-form-title').textContent = site ? `Edit ${site.name}` : 'New client';
+  $('site-delete').hidden = !site;
+  $('site-error').hidden = true;
+  $('addr-search').value = '';
+  const form = $('site-form');
+  form.reset();
+  if (site) {
+    form.elements.name.value = site.name;
+    form.elements.address.value = site.address || '';
+    form.elements.notes.value = site.notes || '';
+    form.elements.radiusKm.value = site.radiusKm || '';
+    placeDraft(site.lat, site.lon, null, site);
+  } else {
+    form.hidden = true;
+    $('lookup').textContent = '';
+    removePin();
+    setPicking(true);
+    $('addr-search').focus();
+  }
+}
+
+function closeSitePanel() {
+  $('site-panel').hidden = true;
+  state.editingSiteId = null;
+  state.draft = null;
+  setPicking(false);
+  removePin();
+}
+
+function removePin() {
+  pin?.remove();
+  pin = null;
+}
+
+function ensurePin(lat, lon) {
+  if (!pin) {
+    const el = h('div', { class: 'draft-pin', title: 'Drag to adjust' }, h('i'));
+    pin = new maplibregl.Marker({ element: el, draggable: true }).setLngLat([lon, lat]).addTo(map);
+    pin.on('dragend', () => {
+      const p = pin.getLngLat();
+      placeDraft(p.lat, p.lng, null, state.snap?.sites.find((s) => s.id === state.editingSiteId) || null);
+    });
+  } else pin.setLngLat([lon, lat]);
+}
+
+let lookupSeq = 0;
+/** A point was chosen (click, search or drag): fill coordinates and look it up. */
+async function placeDraft(lat, lon, place = null, site = null) {
+  setPicking(false);
+  ensurePin(lat, lon);
   const form = $('site-form');
   form.hidden = false;
-  form.reset();
-  $('site-error').hidden = true;
-  state.editingSiteId = site?.id || null;
-  $('site-form-title').textContent = site ? `Edit ${site.name}` : 'New site';
-  $('site-delete').hidden = !site;
-  const v = site || {};
-  form.elements.name.value = v.name || '';
-  form.elements.address.value = v.address || '';
-  form.elements.notes.value = v.notes || '';
-  form.elements.radiusKm.value = v.radiusKm || '';
-  form.elements.lat.value = lngLat ? lngLat.lat.toFixed(6) : v.lat ?? '';
-  form.elements.lon.value = lngLat ? lngLat.lng.toFixed(6) : v.lon ?? '';
-  form.elements.name.focus();
-  form.scrollIntoView({ block: 'nearest' });
+  form.elements.lat.value = lat.toFixed(6);
+  form.elements.lon.value = lon.toFixed(6);
+  const addr = form.elements.address;
+  if (place?.label && !site) {
+    addr.value = place.label;
+    addr.dataset.auto = '1';
+  }
+  const box = $('lookup');
+  box.textContent = '';
+  box.append(h('div', { class: 'row' }, h('span', { class: 'spinner' }), ' Looking up utility and internet providers…'));
+  const seq = ++lookupSeq;
+  let info;
+  try {
+    info = await fetch(`/api/lookup?lat=${lat}&lon=${lon}`).then((r) => r.json());
+  } catch (error) {
+    info = { error: error.message };
+  }
+  if (seq !== lookupSeq) return;
+  state.draft = { lat, lon, info };
+  if (!site && !place && info.address?.label && (!addr.value || addr.dataset.auto === '1')) {
+    addr.value = info.address.label;
+    addr.dataset.auto = '1';
+  }
+  if (!site && !form.elements.name.value) form.elements.name.focus();
+  renderLookup(info, site);
 }
 
-$('btn-add-site').addEventListener('click', startPicking);
-$('site-cancel').addEventListener('click', () => {
-  $('site-form').hidden = true;
-  state.editingSiteId = null;
+function renderLookup(info, site) {
+  const box = $('lookup');
+  box.textContent = '';
+  const province = info.provinceName || info.province || 'outside the covered provinces';
+  box.append(h('div', { class: 'row' }, h('b', { text: 'Where' }), h('span', { text: `${info.address?.city ? `${info.address.city}, ` : ''}${province}` })));
+  if (info.province && !info.covered) box.append(h('div', { class: 'row' }, h('b', { text: 'Note' }), h('span', { text: 'Power outages are not monitored in this province.' })));
+
+  // Power utility: the lookup's answer first, the province's others after.
+  const sel = $('f-utility');
+  sel.textContent = '';
+  const p = info.power || {};
+  const opts = p.options || [];
+  sel.append(h('option', { value: '', text: p.id ? `Automatic: ${p.name}` : 'Automatic (unknown)' }));
+  for (const o of opts) sel.append(h('option', { value: o.id, text: `${o.name}${o.monitored ? '' : ' (not monitored)'}` }));
+  if (site?.utility) sel.value = site.utility;
+  const confText = { boundary: 'service-area map', city: 'municipal utility', province: 'main utility in province', guess: 'best guess, confirm on bill', chosen: 'chosen' };
+  $('utility-hint').textContent = p.id
+    ? `${p.name} (${confText[p.confidence] || p.confidence})${p.monitored ? ', live outages monitored' : ', no live outage feed'}.`
+    : 'No utility found for this point.';
+  if (p.id)
+    box.append(h('div', { class: 'row' }, h('b', { text: 'Power' }), h('span', {}, p.name, h('span', { class: `conf ${p.confidence}`, text: confText[p.confidence] || p.confidence }))));
+
+  // Internet providers serving this hexagon.
+  const isp = $('f-isp');
+  isp.textContent = '';
+  isp.append(h('option', { value: '', text: 'Not set' }));
+  const providers = info.internet?.providers || [];
+  const retail = providers.filter((x) => x.retail);
+  for (const x of retail) isp.append(h('option', { value: x.name, text: `${x.name} · ${x.techs.filter((t) => !/transport/i.test(t)).join(', ')}${x.ioda ? ' · network watched' : ''}` }));
+  isp.append(h('option', { value: '__other', text: 'Other…' }));
+  const other = $('f-isp-other');
+  if (site?.isp) {
+    if (retail.some((x) => x.name === site.isp)) isp.value = site.isp;
+    else {
+      isp.value = '__other';
+      other.value = site.isp;
+    }
+  }
+  other.hidden = isp.value !== '__other';
+  $('isp-hint').textContent = info.internet
+    ? `${retail.length} provider${retail.length === 1 ? '' : 's'} serve this area (National Broadband Map).`
+    : `Provider list unavailable${info.internetError ? ` (${info.internetError})` : ''}. Choose Other to type one.`;
+  if (retail.length)
+    box.append(h('div', { class: 'row' }, h('b', { text: 'Internet' }), h('span', { text: retail.slice(0, 5).map((x) => x.name).join(', ') + (retail.length > 5 ? ` +${retail.length - 5}` : '') })));
+}
+
+$('site-form').elements.address.addEventListener('input', (e) => {
+  e.target.dataset.auto = '';
 });
+$('f-isp').addEventListener('change', (e) => {
+  $('f-isp-other').hidden = e.target.value !== '__other';
+  if (e.target.value === '__other') $('f-isp-other').focus();
+});
+for (const id of ['btn-add-site', 'btn-add-site-2']) $(id).addEventListener('click', () => openSitePanel(null));
+$('site-cancel').addEventListener('click', closeSitePanel);
 $('site-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = e.target.elements;
+  const ispPick = f.ispPick.value;
   const body = JSON.stringify({
     name: f.name.value,
     address: f.address.value,
@@ -974,15 +1285,16 @@ $('site-form').addEventListener('submit', async (e) => {
     lat: f.lat.value,
     lon: f.lon.value,
     radiusKm: f.radiusKm.value,
+    utility: f.utility.value,
+    isp: ispPick === '__other' ? $('f-isp-other').value : ispPick,
   });
   try {
     const id = state.editingSiteId;
     const saved = id ? await api('PUT', `/api/sites/${id}`, body) : await api('POST', '/api/sites', body);
-    $('site-form').hidden = true;
-    state.editingSiteId = null;
-    toast(id ? 'Site saved' : 'Site added', saved.site.name);
+    closeSitePanel();
+    toast(id ? 'Client saved' : 'Client added', saved.site.name);
     await refresh();
-    selectSite(saved.site.id);
+    selectSite(saved.site.id, { fly: false });
   } catch (error) {
     $('site-error').textContent = error.message;
     $('site-error').hidden = false;
@@ -991,63 +1303,62 @@ $('site-form').addEventListener('submit', async (e) => {
 $('site-delete').addEventListener('click', async () => {
   const id = state.editingSiteId;
   const site = state.snap.sites.find((s) => s.id === id);
-  if (!id || !window.confirm(`Remove ${site?.name || 'this site'}?`)) return;
+  if (!id || !window.confirm(`Remove ${site?.name || 'this client'}?`)) return;
   try {
     await api('DELETE', `/api/sites/${id}`);
-    $('site-form').hidden = true;
-    state.editingSiteId = null;
-    toast('Site removed', site?.name);
+    closeSitePanel();
+    toast('Client removed', site?.name);
     await refresh();
   } catch (error) {
     $('site-error').textContent = error.message;
     $('site-error').hidden = false;
   }
 });
+for (const name of ['lat', 'lon'])
+  $('site-form').elements[name].addEventListener('change', () => {
+    const f = $('site-form').elements;
+    const lat = Number(f.lat.value);
+    const lon = Number(f.lon.value);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) placeDraft(lat, lon, null, state.snap.sites.find((s) => s.id === state.editingSiteId));
+  });
 $('csv-file').addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
   e.target.value = '';
   if (!file) return;
-  const replace =
-    state.snap.sites.length > 0 &&
-    window.confirm('Replace all existing sites with this file? Choose Cancel to add them to the current list instead.');
+  const replace = state.snap.sites.length > 0 && window.confirm('Replace all existing clients with this file? Choose Cancel to add them to the current list instead.');
   try {
     const res = await api('POST', `/api/sites/import?mode=${replace ? 'replace' : 'append'}`, await file.text(), 'text/csv');
-    toast(`Imported ${res.imported} site${res.imported === 1 ? '' : 's'}`, res.errors?.length ? `${res.errors.length} rows skipped: ${res.errors[0]}` : '');
+    toast(`Imported ${res.imported} client${res.imported === 1 ? '' : 's'}`, res.errors?.length ? `${res.errors.length} rows skipped: ${res.errors[0]}` : '');
     await refresh();
   } catch (error) {
     toast('Import failed', error.message, 'bad');
   }
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && state.picking) stopPicking();
-});
-
-// ------------------------------------------------------------ tabs, etc. --
-
-function setTab(name) {
-  state.tab = name;
-  for (const t of ['outages', 'clients', 'sources', 'history']) {
-    $(`tab-${t}`).setAttribute('aria-selected', String(t === name));
-    $(`view-${t}`).hidden = t !== name;
+  if (e.key !== 'Escape') return;
+  if (state.picking) {
+    setPicking(false);
+    if (!state.draft) closeSitePanel();
   }
-  if (name === 'history') loadHistory();
-}
-for (const t of ['outages', 'clients', 'sources', 'history'])
-  $(`tab-${t}`).addEventListener('click', () => setTab(t));
-document.querySelector('.tabs').addEventListener('keydown', (e) => {
-  const tabs = ['outages', 'clients', 'sources', 'history'];
-  const i = tabs.indexOf(state.tab);
-  if (e.key === 'ArrowRight') setTab(tabs[(i + 1) % tabs.length]);
-  else if (e.key === 'ArrowLeft') setTab(tabs[(i + tabs.length - 1) % tabs.length]);
-  else return;
-  $(`tab-${state.tab}`).focus();
 });
+
+// ------------------------------------------------------------- layers --
+
+for (const box of document.querySelectorAll('[data-layer]')) {
+  box.checked = state.layers[box.dataset.layer];
+  box.addEventListener('change', () => {
+    state.layers[box.dataset.layer] = box.checked;
+    local.set(`layer:${box.dataset.layer}`, box.checked ? 'on' : 'off');
+    applyLayerVisibility();
+  });
+}
+
+// ---------------------------------------------------------- outage tools --
 
 for (const b of document.querySelectorAll('.segmented button'))
   b.addEventListener('click', () => {
     state.filter = b.dataset.filter;
-    for (const o of document.querySelectorAll('.segmented button'))
-      o.setAttribute('aria-pressed', String(o === b));
+    for (const o of document.querySelectorAll('.segmented button')) o.setAttribute('aria-pressed', String(o === b));
     renderOutageList();
     renderMap();
   });
@@ -1063,10 +1374,8 @@ function setTv(on) {
   else url.searchParams.delete('tv');
   history.replaceState(null, '', url);
   $('btn-tv').querySelector('.btn-label').textContent = on ? 'Exit wall view' : 'Wall view';
-  setTimeout(() => {
-    map.resize();
-    if (on) map.fitBounds(ALBERTA, { padding: 40, duration: 0 });
-  }, 50);
+  if (on) openPanel(null);
+  setTimeout(() => map.resize(), 50);
 }
 $('btn-tv').addEventListener('click', () => setTv(!document.body.classList.contains('tv')));
 
@@ -1079,6 +1388,7 @@ async function refresh() {
     state.snap = await res.json();
     state.lastOkAt = Date.now();
     renderTop();
+    renderProvinceFilter();
     renderOutageList();
     renderSiteList();
     renderSources();
@@ -1090,23 +1400,20 @@ async function refresh() {
       else popup.remove();
     }
   } catch (error) {
-    const el = $('updated');
-    el.classList.add('late');
-    el.textContent = state.lastOkAt
-      ? `Cannot reach the server, last data ${ago(state.lastOkAt)}`
-      : `Cannot reach the server (${error.message})`;
+    $('btn-feeds').classList.add('late');
+    $('updated').textContent = state.lastOkAt ? `server unreachable, ${ago(state.lastOkAt)}` : `server unreachable (${error.message})`;
   }
 }
 
 renderAlertButton();
 if (new URLSearchParams(location.search).get('tv') === '1' || location.pathname === '/tv') setTv(true);
+else if (local.get('panel')) openPanel(local.get('panel'));
 refresh();
-loadHistory();
 setInterval(refresh, REFRESH_MS);
 setInterval(() => {
-  if (state.tab === 'history') loadHistory();
+  if (state.panel === 'history') loadHistory();
 }, HISTORY_REFRESH_MS);
 setInterval(stampUpdated, 5_000);
 window.addEventListener('resize', () => {
-  if (state.tab === 'history') renderHistory();
+  if (state.panel === 'history') renderHistory();
 });

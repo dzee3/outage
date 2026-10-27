@@ -1,4 +1,5 @@
 import { summarize } from './records.js';
+import { asnsFor } from './isp.js';
 import {
   distanceKm,
   distanceToPolygonsKm,
@@ -39,12 +40,14 @@ export function provinceOf(point, provinces) {
 
 /**
  * Work out how outages affect one client site.
- * @returns {{status, province, outages: Array<{id, relation, distanceKm}>, internet: boolean}}
+ * @returns {{status, province, utility, outages: Array<{id, relation, distanceKm}>,
+ *            internet: boolean, network: object|null}}
  */
-export function siteImpact(site, rows, { provinces, coverage, internet }) {
+export function siteImpact(site, rows, { provinces, coverage, internet, utilityFor = null }) {
   const point = { lat: site.lat, lon: site.lon };
   const radius = site.radiusKm || DEFAULT_RADIUS_KM;
   const province = provinceOf(point, provinces);
+  const utility = utilityFor ? utilityFor(site, province) : null;
   const hits = [];
   for (const row of rows) {
     let relation = null;
@@ -62,6 +65,7 @@ export function siteImpact(site, rows, { provinces, coverage, internet }) {
     hits.push({
       id: row.stableId,
       kind: row.kind,
+      utility: row.utility,
       relation,
       distanceKm: Math.round(distance * 10) / 10,
     });
@@ -69,14 +73,22 @@ export function siteImpact(site, rows, { provinces, coverage, internet }) {
   hits.sort((a, b) => a.distanceKm - b.distanceKm);
   const live = hits.filter((h) => h.kind !== 'planned-upcoming');
   const internetActive = Boolean(province && internet?.provinces?.[province]?.active);
+  // The client's own provider: IODA watches the big Canadian networks by ASN.
+  let network = null;
+  const isp = asnsFor(site.isp);
+  if (isp) {
+    const active = isp.asns.map((a) => internet?.networks?.[a]).filter((n) => n?.active);
+    if (active.length) network = { name: isp.name, since: Math.min(...active.map((n) => n.since ?? Infinity)), signals: [...new Set(active.flatMap((n) => n.signals))] };
+  }
+  const monitored = province && coverage[province] && (!utility || utility.monitored !== false);
   let status;
   if (live.some((h) => h.relation === 'inside')) status = 'out';
   else if (live.length) status = 'near';
-  else if (internetActive) status = 'internet';
+  else if (network || internetActive) status = 'internet';
   else if (hits.length) status = 'planned';
-  else if (!province || !coverage[province]) status = 'no-coverage';
+  else if (!monitored) status = 'no-coverage';
   else status = 'ok';
-  return { status, province, outages: hits.slice(0, 5), internet: internetActive };
+  return { status, province, utility, outages: hits.slice(0, 5), internet: internetActive, network };
 }
 
 /**
@@ -89,6 +101,7 @@ export function createMonitor({
   store,
   provinces,
   coverage,
+  utilityFor = null,
   now = () => Date.now(),
   log = console,
 }) {
@@ -178,13 +191,15 @@ export function createMonitor({
         lastSuccessAt: internetState.lastSuccessAt,
         error: internetState.error,
         provinces: fresh ? internetState.value.provinces : {},
+        networks: fresh ? internetState.value.networks || {} : {},
+        networksError: fresh ? internetState.value.networksError || null : null,
         recent: fresh ? internetState.value.recent : [],
       };
     }
 
     const sites = store.listSites().map((site) => ({
       ...site,
-      impact: siteImpact(site, rows, { provinces, coverage, internet }),
+      impact: siteImpact(site, rows, { provinces, coverage, internet, utilityFor }),
     }));
     sites.sort(
       (a, b) =>
@@ -221,6 +236,7 @@ export function createMonitor({
         sitesAffected: sites.filter((s) => ['out', 'near', 'internet'].includes(s.impact.status)).length,
         sitesTotal: sites.length,
         internetAlerts: Object.values(internet.provinces || {}).filter((p) => p.active).length,
+        networkAlerts: Object.values(internet.networks || {}).filter((n) => n.active).length,
         bigOutages: rows.filter((r) => r.kind === 'unplanned' && (r.customers ?? 0) >= BIG_OUTAGE).length,
       },
       sources: sourceViews,
