@@ -1,33 +1,23 @@
-# Outage Desk: office deployment.
-#
-# Put this file in an empty folder on the office machine and run:
-#   docker compose up -d --build
-# Then open http://<this-computer's-name>:8080 (wall screen: /tv).
-#
-# Update to the latest code later with the same command plus --pull:
-#   docker compose build --pull --no-cache && docker compose up -d
+# docker compose up -d --build
+# Then open http://<this-computer>:8080 from any PC on the office network.
 services:
   outage-desk:
-    # Builds straight from the GitHub repo; no other files needed here.
-    build: https://github.com/dzee3/outage.git#main
-    # Always build locally; never try to download an "outage-desk" image.
-    pull_policy: build
+    build: .
     image: outage-desk:latest
-    container_name: outage-desk
     restart: unless-stopped
     ports:
-      - '5555:8080'
+      - '8080:8080'
     environment:
-      # Optional: a code people must enter to add, edit or remove client
-      # sites. Leave empty to let anyone on the network edit.
-      - EDIT_TOKEN=
-      # "off" hides the IODA province-level internet layer.
-      - INTERNET=on
-      # 1 = replay sample data instead of polling the utilities.
-      - DEMO=0
+      # Optional: set an edit code so only people who know it can add or
+      # remove client sites. Viewing never needs it.
+      - EDIT_TOKEN=${EDIT_TOKEN:-}
+      # Set to "off" to hide the IODA internet layer.
+      - INTERNET=${INTERNET:-on}
+      # Set to 1 to replay sample data instead of polling the utilities.
+      - DEMO=${DEMO:-0}
     volumes:
-      # Client sites, history and the event log; survives rebuilds.
+      # Client sites, history and the event log live here and survive rebuilds.
       - outage-data:/data
- 
+
 volumes:
   outage-data:

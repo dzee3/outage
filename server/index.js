@@ -40,7 +40,14 @@ if (config.demo && store.listSites().length === 0) {
   store.replaceSites(demoSites);
 }
 
-const provinces = JSON.parse(readFileSync(path.join(WEB, 'data/provinces.geojson'), 'utf8'));
+// Province outlines: used to place client sites in a province. Missing outlines
+// degrade site matching instead of stopping the server.
+let provinces = { type: 'FeatureCollection', features: [] };
+try {
+  provinces = JSON.parse(readFileSync(path.join(WEB, 'data/provinces.geojson'), 'utf8'));
+} catch (error) {
+  console.error(`[outages] province outlines unavailable (${error.message}); sites will show "not monitored"`);
+}
 
 const monitor = createMonitor({
   sources: config.demo
