@@ -33,6 +33,17 @@ Internet:
   Aliant, Rogers, Shaw, Telus, SaskTel, Eastlink, Cogeco, Xplore, TekSavvy,
   Distributel and Starlink. A client whose provider's network drops is flagged.
   These are national network signals, so they can't tell which town is affected.
+- **Provider outage pages, per client address:** each client's ISP is checked
+  against that provider's own public outage page every 5 minutes:
+  - **Telus:** national feed with mapped outage cells, matched by location
+  - **Rogers / Shaw:** per-province notices naming the city and
+    neighbourhoods, matched by name and by distance to the neighbourhood
+  - **TekSavvy:** its public outage map, matched by location
+  - **SaskTel:** its reported-outages list, matched by city
+
+  Bell checks addresses behind a CAPTCHA, which the dashboard does not get
+  around, and Eastlink, Cogeco and Xplore publish no public map. Clients with
+  those providers rely on the network signals instead.
 - **Who serves a spot:** the federal [National Broadband Map](https://ised-isde.canada.ca/app/scr/sittibc/web/bbmap?lang=eng#!/map)
   (ISED), in ~25 km² hexagons.
 

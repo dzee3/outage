@@ -2,7 +2,8 @@ import http from 'node:http';
 import { readFileSync, existsSync, statSync, createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { requestJson, requestRaw } from './http.js';
+import { requestJson, requestRaw, requestText } from './http.js';
+import { createIspStatus } from './isp-status.js';
 import { albertaSources, ALBERTA_UNMONITORED } from './sources/alberta.js';
 import { canadaSources, CANADA_UNMONITORED } from './sources/canada.js';
 import { iodaSource } from './sources/ioda.js';
@@ -69,6 +70,7 @@ for (const src of sources) {
 const territory = createTerritory({ dataDir: config.dataDir, requestRaw, requestJson: request, now });
 const geocoder = createGeocoder({ request });
 const isp = createIspLookup({ request, dataDir: config.dataDir, now });
+const ispStatus = createIspStatus({ request, requestText, geocoder, now });
 
 /** Who supplies a site: the technician's choice, else the territory lookup. */
 const utilityCache = new Map();
@@ -99,6 +101,7 @@ const monitor = createMonitor({
   provinces,
   coverage,
   utilityFor,
+  ispFor: config.demo ? null : (site) => ispStatus.statusFor(site),
   now,
 });
 if (!config.demo)
@@ -191,6 +194,8 @@ async function handle(req, res) {
       const snap = monitor.snapshot() || (await monitor.tick());
       return json(res, 200, {
         ...snap,
+        ispNotices: ispStatus.notices().map(({ text, ...n }) => n),
+        ispSources: ispStatus.health(),
         demo: config.demo,
         canEdit: !config.editToken,
         editProtected: Boolean(config.editToken),
@@ -230,6 +235,12 @@ async function handle(req, res) {
         internetError: internet.status === 'rejected' ? internet.reason?.message : null,
         internetSource: NBM_PAGE,
       });
+    }
+    if (p === '/api/isp/check' && req.method === 'GET') {
+      const q = Object.fromEntries(url.searchParams);
+      const site = { lat: Number(q.lat), lon: Number(q.lon), isp: q.isp, city: q.city, area: q.area };
+      if (!Number.isFinite(site.lat) || !Number.isFinite(site.lon)) return json(res, 400, { error: 'lat and lon are required.' });
+      return json(res, 200, { status: ispStatus.statusFor(site) });
     }
     if (p === '/api/isp/area' && req.method === 'GET') {
       const b = String(url.searchParams.get('bbox') || '').split(',').map(Number);
@@ -343,6 +354,35 @@ function seedDemoHistory() {
 const timer = setInterval(() => {
   monitor.tick().catch((error) => console.error('[outages] tick failed', error));
 }, config.pollSeconds * 1000);
+// Provider outage pages: own 5-minute schedule; re-score sites when they change.
+async function pollIsps() {
+  if (config.demo) return;
+  await ispStatus.refresh();
+  monitor.reassess();
+}
+pollIsps().catch((error) => console.error('[isp-status] poll failed', error));
+const ispTimer = setInterval(() => pollIsps().catch(() => {}), 60_000);
+ispTimer.unref();
+
+// Sites added by CSV (or before this version) get a city and neighbourhood,
+// which provider notices are matched against. A few per minute.
+const backfillTried = new Set();
+const backfillTimer = setInterval(async () => {
+  if (config.demo) return;
+  const todo = store.listSites().filter((s) => !s.city && !backfillTried.has(s.id)).slice(0, 3);
+  for (const site of todo) {
+    backfillTried.add(site.id);
+    try {
+      const place = await geocoder.reverse(site.lat, site.lon);
+      if (place?.city) store.updateSite(site.id, { city: place.city, area: place.area || '' });
+    } catch {
+      /* try again after a restart */
+    }
+  }
+  if (todo.length) monitor.reassess();
+}, 60_000);
+backfillTimer.unref();
+
 const territoryTimer = setInterval(() => {
   if (!config.demo)
     territory.refresh().then(() => {

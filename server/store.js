@@ -60,13 +60,16 @@ export function validateSite(input, existing = {}) {
   // Who supplies the site. Empty means "work it out from the location".
   if ('utility' in input) site.utility = clean(input.utility, 60).toLowerCase().replace(/[^a-z0-9-]/g, '');
   if ('isp' in input) site.isp = clean(input.isp, 80);
+  // City and neighbourhood, used to match ISP notices that name places.
+  if ('city' in input) site.city = clean(input.city, 80);
+  if ('area' in input) site.area = clean(input.area, 80);
   if ('radiusKm' in input && input.radiusKm !== '' && input.radiusKm != null) {
     const r = Number(input.radiusKm);
     if (!Number.isFinite(r) || r < 0.2 || r > 50)
       throw new Error('Alert radius must be between 0.2 and 50 km.');
     site.radiusKm = r;
   }
-  for (const key of ['address', 'notes', 'utility', 'isp']) if (site[key] === '') delete site[key];
+  for (const key of ['address', 'notes', 'utility', 'isp', 'city', 'area']) if (site[key] === '') delete site[key];
   site.lat = Math.round(site.lat * 1e6) / 1e6;
   site.lon = Math.round(site.lon * 1e6) / 1e6;
   return site;

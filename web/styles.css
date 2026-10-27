@@ -88,9 +88,9 @@ code { font-size: 0.92em; color: #cfeaf5; }
 .feeds.late { border-color: var(--planned); }
 .feeds.late .updated { color: var(--planned) !important; }
 .lamp-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; box-shadow: 0 0 8px currentColor; }
-[data-status='ok'] > .lamp-dot, .lamp-dot[data-status='ok'] { background: var(--ok); color: var(--ok); }
-[data-status='stale'] > .lamp-dot, .lamp-dot[data-status='stale'] { background: var(--stale); color: var(--stale); }
-[data-status='down'] > .lamp-dot, .lamp-dot[data-status='down'] { background: var(--down); color: var(--down); }
+.source[data-status='ok'] .lamp-dot, .lamp-dot[data-status='ok'] { background: var(--ok); color: var(--ok); }
+.source[data-status='stale'] .lamp-dot, .lamp-dot[data-status='stale'] { background: var(--stale); color: var(--stale); }
+.source[data-status='down'] .lamp-dot, .lamp-dot[data-status='down'] { background: var(--down); color: var(--down); }
 .primary-chip { background: rgba(94, 240, 255, 0.16); border-color: var(--cyan); color: var(--cyan); }
 .primary-chip:hover { background: rgba(94, 240, 255, 0.26); }
 
@@ -348,3 +348,15 @@ body.tv .tv-feed {
   .suggest.up { width: calc(100vw - 28px); }
 }
 .site-form .form-actions { position: sticky; bottom: -16px; margin: 0 -14px -16px; padding: 10px 14px 14px; background: linear-gradient(rgba(8, 14, 20, 0), rgba(8, 14, 20, 0.97) 35%); }
+
+.isp-check:empty { display: none; }
+.isp-check { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.isp-check[data-state='out'] { border-color: var(--internet); color: #d7ccff; }
+.isp-check[data-state='planned'] { border-color: var(--planned); color: #ffe2a8; }
+.isp-check[data-state='clear'] { border-color: rgba(70, 227, 155, 0.4); color: #bff5da; }
+.isp-check b { color: var(--text); }
+.isp-line { margin: 8px 0 0; font-size: 13px; }
+.isp-line[data-state='out'] { color: #c7b8ff; }
+.isp-line[data-state='planned'] { color: #ffd27a; }
+.isp-line[data-state='clear'] { color: #8fe6bd; }
+.isp-line[data-state='nearby'], .isp-line[data-state='unknown'], .isp-line[data-state='manual'] { color: var(--muted); }

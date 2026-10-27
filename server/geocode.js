@@ -28,6 +28,7 @@ export function placeFrom(r) {
     lat: Number(r?.lat),
     lon: Number(r?.lon),
     city,
+    area: a.neighbourhood || a.suburb || a.quarter || a.city_district || null,
     province: PROVINCE_FROM_ISO[a['ISO3166-2-lvl4']] || null,
     precise: Boolean(a.house_number),
   };

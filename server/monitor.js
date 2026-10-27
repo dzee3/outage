@@ -43,7 +43,7 @@ export function provinceOf(point, provinces) {
  * @returns {{status, province, utility, outages: Array<{id, relation, distanceKm}>,
  *            internet: boolean, network: object|null}}
  */
-export function siteImpact(site, rows, { provinces, coverage, internet, utilityFor = null }) {
+export function siteImpact(site, rows, { provinces, coverage, internet, utilityFor = null, ispFor = null }) {
   const point = { lat: site.lat, lon: site.lon };
   const radius = site.radiusKm || DEFAULT_RADIUS_KM;
   const province = provinceOf(point, provinces);
@@ -75,20 +75,22 @@ export function siteImpact(site, rows, { provinces, coverage, internet, utilityF
   const internetActive = Boolean(province && internet?.provinces?.[province]?.active);
   // The client's own provider: IODA watches the big Canadian networks by ASN.
   let network = null;
-  const isp = asnsFor(site.isp);
-  if (isp) {
-    const active = isp.asns.map((a) => internet?.networks?.[a]).filter((n) => n?.active);
-    if (active.length) network = { name: isp.name, since: Math.min(...active.map((n) => n.since ?? Infinity)), signals: [...new Set(active.flatMap((n) => n.signals))] };
+  const ispNet = asnsFor(site.isp);
+  if (ispNet) {
+    const active = ispNet.asns.map((a) => internet?.networks?.[a]).filter((n) => n?.active);
+    if (active.length) network = { name: ispNet.name, since: Math.min(...active.map((n) => n.since ?? Infinity)), signals: [...new Set(active.flatMap((n) => n.signals))] };
   }
+  // The provider's own outage page, matched to this address.
+  const isp = ispFor ? ispFor(site) : null;
   const monitored = province && coverage[province] && (!utility || utility.monitored !== false);
   let status;
   if (live.some((h) => h.relation === 'inside')) status = 'out';
   else if (live.length) status = 'near';
-  else if (network || internetActive) status = 'internet';
-  else if (hits.length) status = 'planned';
+  else if (isp?.state === 'out' || network || internetActive) status = 'internet';
+  else if (hits.length || isp?.state === 'planned') status = 'planned';
   else if (!monitored) status = 'no-coverage';
   else status = 'ok';
-  return { status, province, utility, outages: hits.slice(0, 5), internet: internetActive, network };
+  return { status, province, utility, outages: hits.slice(0, 5), internet: internetActive, network, isp };
 }
 
 /**
@@ -102,6 +104,7 @@ export function createMonitor({
   provinces,
   coverage,
   utilityFor = null,
+  ispFor = null,
   now = () => Date.now(),
   log = console,
 }) {
@@ -199,7 +202,7 @@ export function createMonitor({
 
     const sites = store.listSites().map((site) => ({
       ...site,
-      impact: siteImpact(site, rows, { provinces, coverage, internet, utilityFor }),
+      impact: siteImpact(site, rows, { provinces, coverage, internet, utilityFor, ispFor }),
     }));
     sites.sort(
       (a, b) =>

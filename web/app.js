@@ -169,6 +169,7 @@ const state = {
     outages: local.get('layer:outages') !== 'off',
     territories: local.get('layer:territories') === 'on',
     internet: local.get('layer:internet') !== 'off',
+    ispnotices: local.get('layer:ispnotices') !== 'off',
     isp: local.get('layer:isp') === 'on',
     clients: local.get('layer:clients') !== 'off',
     labels: local.get('layer:labels') !== 'off',
@@ -333,6 +334,35 @@ map.on('style.load', () => {
     paint: { 'line-color': COLORS.internet, 'line-width': 1, 'line-opacity': 0.45 },
   });
 
+  // Internet providers' own outage notices (Telus cells, TekSavvy map, Rogers neighbourhoods).
+  map.addSource('isp-notices', { type: 'geojson', data: empty() });
+  map.addLayer({
+    id: 'ispn-fill',
+    type: 'fill',
+    source: 'isp-notices',
+    filter: ['==', ['geometry-type'], 'Polygon'],
+    paint: { 'fill-color': ['match', ['get', 'kind'], 'planned', '#ffb02e', COLORS.internet], 'fill-opacity': 0.35 },
+  });
+  map.addLayer({
+    id: 'ispn-glow',
+    type: 'circle',
+    source: 'isp-notices',
+    filter: ['==', ['geometry-type'], 'Point'],
+    paint: { 'circle-radius': 16, 'circle-color': ['match', ['get', 'kind'], 'planned', '#ffb02e', COLORS.internet], 'circle-opacity': 0.22, 'circle-blur': 0.8 },
+  });
+  map.addLayer({
+    id: 'ispn-point',
+    type: 'circle',
+    source: 'isp-notices',
+    filter: ['==', ['geometry-type'], 'Point'],
+    paint: {
+      'circle-radius': 6,
+      'circle-color': '#05080b',
+      'circle-stroke-color': ['match', ['get', 'kind'], 'planned', '#ffb02e', COLORS.internet],
+      'circle-stroke-width': 2.5,
+    },
+  });
+
   map.addSource('areas', { type: 'geojson', data: empty() });
   map.addLayer({
     id: 'areas-fill',
@@ -416,6 +446,13 @@ map.on('style.load', () => {
 });
 
 {
+  for (const layer of ['ispn-point', 'ispn-fill'])
+    map.on('click', layer, (e) => {
+      if (state.picking) return;
+      const id = e.features[0]?.properties?.id;
+      const n = state.snap?.ispNotices?.find((x) => x.id === id);
+      if (n) openPopup(e.lngLat, ispNoticePopup(n));
+    });
   for (const layer of ['points', 'areas-fill'])
     map.on('click', layer, (e) => {
       if (state.picking) return;
@@ -427,7 +464,7 @@ map.on('style.load', () => {
     const id = e.features[0]?.properties?.id;
     if (id) selectSite(id, { fly: false });
   });
-  for (const layer of ['points', 'areas-fill', 'sites']) {
+  for (const layer of ['points', 'areas-fill', 'sites', 'ispn-point', 'ispn-fill']) {
     map.on('mouseenter', layer, () => {
       if (!state.picking) map.getCanvas().style.cursor = 'pointer';
     });
@@ -453,6 +490,7 @@ function applyLayerVisibility() {
   setVisible('sites', L.clients);
   setVisible('site-labels', L.clients && L.labels);
   setVisible('isp-hex', L.isp);
+  for (const id of ['ispn-fill', 'ispn-glow', 'ispn-point']) setVisible(id, L.ispnotices);
   $('isp-card').hidden = !L.isp;
   if (L.isp) loadIspInView();
 }
@@ -474,7 +512,8 @@ function siteDetail(s) {
   const first = s.impact.outages[0];
   if (s.impact.status === 'out') return 'NO POWER';
   if (s.impact.status === 'near' && first) return `outage ${first.distanceKm} km`;
-  if (s.impact.status === 'internet') return s.impact.network ? `${s.impact.network.name} network drop` : 'internet drop';
+  if (s.impact.status === 'internet') return s.impact.isp?.state === 'out' ? `${s.impact.isp.name} outage` : s.impact.network ? `${s.impact.network.name} network drop` : 'internet drop';
+  if (s.impact.isp?.state === 'planned') return `${s.impact.isp.name} maintenance`;
   if (s.impact.status === 'planned' && first) return `planned work ${first.distanceKm} km`;
   return '';
 }
@@ -495,6 +534,16 @@ function renderMap() {
     });
   }
   map.getSource('areas').setData({ type: 'FeatureCollection', features: areas });
+  const ispFeatures = [];
+  for (const n of state.snap.ispNotices || []) {
+    const props = { id: n.id, kind: n.kind };
+    for (const [lat, lon, w, hgt] of n.cells || [])
+      ispFeatures.push({ type: 'Feature', properties: props, geometry: { type: 'Polygon', coordinates: [[[lon, lat], [lon + w, lat], [lon + w, lat + hgt], [lon, lat + hgt], [lon, lat]]] } });
+    for (const rings of n.polygons || []) ispFeatures.push({ type: 'Feature', properties: props, geometry: { type: 'Polygon', coordinates: rings } });
+    const pts = n.areaPoints?.length ? n.areaPoints : n.point ? [n.point] : [];
+    for (const p of pts) ispFeatures.push({ type: 'Feature', properties: props, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } });
+  }
+  map.getSource('isp-notices')?.setData({ type: 'FeatureCollection', features: ispFeatures });
   map.getSource('points').setData({ type: 'FeatureCollection', features: points });
   const rank = { out: 0, near: 1, internet: 2, planned: 3, ok: 4, 'no-coverage': 5 };
   map.getSource('sites').setData({
@@ -642,6 +691,45 @@ function outagePopup(r) {
   );
 }
 
+const ISP_STATE_TEXT = {
+  out: 'outage reported at this address',
+  planned: 'planned maintenance here',
+  nearby: 'notice elsewhere in the same town',
+  clear: 'no outage reported',
+  unknown: 'outage page not reachable right now',
+};
+function ispNoticePopup(n) {
+  const provider = { telus: 'Telus', rogers: 'Rogers / Shaw', teksavvy: 'TekSavvy', sasktel: 'SaskTel' }[n.provider] || n.provider;
+  const rows = [
+    ['Services', (n.services || []).join(', ')],
+    ['Details', n.detail],
+    [n.kind === 'planned' ? 'Starts' : 'Since', n.startMs ? new Date(n.startMs).toLocaleString('en-CA', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null],
+    ['Ends', n.endMs ? new Date(n.endMs).toLocaleString('en-CA', { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null],
+  ].filter(([, v]) => v);
+  return h('div', { class: 'pop' },
+    h('div', { class: 'pop-kind', style: `color:${n.kind === 'planned' ? '#ffb02e' : COLORS.internet}`, text: n.kind === 'planned' ? 'Internet: planned maintenance' : 'Internet: outage notice' }),
+    h('h4', { text: `${provider} · ${n.title}` }),
+    h('dl', {}, rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])),
+    n.link ? h('div', { class: 'pop-actions' }, h('a', { class: 'btn', href: n.link, target: '_blank', rel: 'noopener', text: `Open ${provider}'s outage page` })) : null,
+  );
+}
+/** One line about a site's internet provider, from its outage page. */
+function ispLine(isp) {
+  if (!isp) return null;
+  if (!isp.provider) return { state: 'manual', text: 'No public outage page is known for this provider.' };
+  if (!isp.supported) return { state: 'manual', text: `${isp.name}: ${isp.note}`, link: isp.link };
+  const top = isp.notices?.[0];
+  let text = `${isp.name}: ${ISP_STATE_TEXT[isp.state] || isp.state}`;
+  if (top) text += `, "${top.title}"${top.detail ? ` (${top.detail})` : ''}`;
+  else if (isp.state === 'clear') text += isp.checkedAt ? ` (checked ${ago(isp.checkedAt)})` : '';
+  return { state: isp.state, text, link: top?.link || isp.link };
+}
+function ispLineEl(isp) {
+  const l = ispLine(isp);
+  if (!l) return null;
+  return h('p', { class: 'isp-line', dataset: { state: l.state } }, l.text, l.link ? h('span', {}, ' ', h('a', { href: l.link, target: '_blank', rel: 'noopener', text: 'outage page' })) : null);
+}
+
 function sitePopup(s) {
   const impact = s.impact;
   const rowsById = new Map(state.snap.rows.map((r) => [r.stableId, r]));
@@ -663,6 +751,7 @@ function sitePopup(s) {
       h('dt', { text: 'Internet' }), h('dd', { text: s.isp || 'not set' }),
     ),
     hits.length ? h('ul', {}, hits) : null,
+    ispLineEl(impact.isp),
     impact.network ? h('p', { style: 'color:#c7b8ff', text: `${impact.network.name}'s network shows a drop since ${LOCAL.format(new Date(impact.network.since))} (IODA ${impact.network.signals.join(', ')}). National network signal, may not be this site.` }) : null,
     internet ? h('p', { style: 'color:#c7b8ff', text: `Internet connectivity across ${PROVINCE_NAMES[impact.province]} dropped ${ago(internet.since)} (IODA). Province-wide, not site-specific.` }) : null,
     impact.status === 'no-coverage' ? h('p', { style: 'color:#9fb4c2', text: u && !u.monitored ? `${u.name} publishes no live outage map, so this site cannot be checked automatically.` : `Power outages aren't monitored in ${PROVINCE_NAMES[impact.province] || 'this area'}.` }) : null,
@@ -815,6 +904,9 @@ function renderOutageList() {
 
 function siteMeta(s) {
   const first = s.impact.outages[0];
+  const ispNow = s.impact.isp;
+  if (ispNow?.state === 'out' && !['out', 'near'].includes(s.impact.status)) return `${ispNow.name} reports an outage here: ${ispNow.notices[0]?.title || ''}`;
+  if (ispNow?.state === 'planned' && s.impact.status === 'planned' && !first) return `${ispNow.name} planned maintenance: ${ispNow.notices[0]?.title || ''}`;
   const u = s.impact.utility;
   if (first && s.impact.status !== 'planned') return first.relation === 'inside' ? `Inside a ${utilityName(first.utility)} outage` : `${first.distanceKm} km from a ${utilityName(first.utility)} outage`;
   if (s.impact.status === 'planned' && first) {
@@ -894,6 +986,17 @@ function renderSources() {
       s.internet.error ? h('p', { class: 'source-error', text: `Last error: ${s.internet.error}` }) : null,
       h('p', { text: 'Data: IODA, Georgia Tech. Measured connectivity, not provider status pages.' }),
     ]));
+  }
+  const pages = Object.values(s.ispSources || {});
+  if (pages.length) {
+    list.append(h('li', { class: 'prov-head', text: 'Internet provider outage pages' }));
+    for (const src of pages)
+      list.append(card(src, [
+        h('p', { text: `${fmt(src.notices)} open notice${src.notices === 1 ? '' : 's'} with Internet affected. Last good data ${ago(src.lastSuccessAt)}.` }),
+        src.error ? h('p', { class: 'source-error', text: `Last error: ${src.error}` }) : null,
+        h('p', {}, h('a', { href: src.page, target: '_blank', rel: 'noopener', text: `Open ${src.name}'s outage page` })),
+      ]));
+    list.append(h('li', {}, h('p', { class: 'hint', text: 'Bell checks addresses behind a CAPTCHA, and Eastlink, Cogeco and Xplore publish no public map, so those clients rely on the network signals above.' })));
   }
   const cov = $('coverage');
   cov.textContent = '';
@@ -1230,6 +1333,9 @@ async function placeDraft(lat, lon, place = null, site = null) {
 function renderLookup(info, site) {
   const box = $('lookup');
   box.textContent = '';
+  const fe = $('site-form').elements;
+  fe.city.value = info.address?.city || site?.city || '';
+  fe.area.value = info.address?.area || site?.area || '';
   const province = info.provinceName || info.province || 'outside the covered provinces';
   box.append(h('div', { class: 'row' }, h('b', { text: 'Where' }), h('span', { text: `${info.address?.city ? `${info.address.city}, ` : ''}${province}` })));
   if (info.province && !info.covered) box.append(h('div', { class: 'row' }, h('b', { text: 'Note' }), h('span', { text: 'Power outages are not monitored in this province.' })));
@@ -1266,6 +1372,7 @@ function renderLookup(info, site) {
     }
   }
   other.hidden = isp.value !== '__other';
+  checkIsp();
   $('isp-hint').textContent = info.internet
     ? `${retail.length} provider${retail.length === 1 ? '' : 's'} serve this area (National Broadband Map).`
     : `Provider list unavailable${info.internetError ? ` (${info.internetError})` : ''}. Choose Other to type one.`;
@@ -1276,10 +1383,34 @@ function renderLookup(info, site) {
 $('site-form').elements.address.addEventListener('input', (e) => {
   e.target.dataset.auto = '';
 });
+let ispCheckSeq = 0;
+/** Ask the selected provider's outage page about this address. */
+async function checkIsp() {
+  const f = $('site-form').elements;
+  const name = f.ispPick.value === '__other' ? $('f-isp-other').value : f.ispPick.value;
+  const box = $('isp-check');
+  box.textContent = '';
+  delete box.dataset.state;
+  if (!name || !f.lat.value) return;
+  const seq = ++ispCheckSeq;
+  try {
+    const q = new URLSearchParams({ lat: f.lat.value, lon: f.lon.value, isp: name, city: f.city.value, area: f.area.value });
+    const { status } = await fetch(`/api/isp/check?${q}`).then((r) => r.json());
+    if (seq !== ispCheckSeq) return;
+    const l = ispLine(status);
+    if (!l) return;
+    box.dataset.state = l.state;
+    box.append(h('b', { text: 'Outage check: ' }), l.text, l.link ? h('span', {}, ' ', h('a', { href: l.link, target: '_blank', rel: 'noopener', text: 'outage page' })) : null);
+  } catch {
+    /* the site list will show it after saving */
+  }
+}
 $('f-isp').addEventListener('change', (e) => {
   $('f-isp-other').hidden = e.target.value !== '__other';
   if (e.target.value === '__other') $('f-isp-other').focus();
+  checkIsp();
 });
+$('f-isp-other').addEventListener('change', checkIsp);
 for (const id of ['btn-add-site', 'btn-add-site-2']) $(id).addEventListener('click', () => openSitePanel(null));
 $('site-cancel').addEventListener('click', closeSitePanel);
 $('site-form').addEventListener('submit', async (e) => {
@@ -1295,6 +1426,8 @@ $('site-form').addEventListener('submit', async (e) => {
     radiusKm: f.radiusKm.value,
     utility: f.utility.value,
     isp: ispPick === '__other' ? $('f-isp-other').value : ispPick,
+    city: f.city.value,
+    area: f.area.value,
   });
   try {
     const id = state.editingSiteId;

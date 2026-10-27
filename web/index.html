@@ -119,6 +119,7 @@
         </div>
         <div class="layer-group">
           <h3>Internet</h3>
+          <label class="toggle"><input type="checkbox" data-layer="ispnotices" checked /><span>Provider outage notices (Telus, Rogers/Shaw, TekSavvy)</span></label>
           <label class="toggle"><input type="checkbox" data-layer="internet" checked /><span>Province-wide drops (IODA)</span></label>
           <label class="toggle"><input type="checkbox" data-layer="isp" /><span>Internet providers in view</span></label>
           <p class="hint">Providers come from the federal National Broadband Map, in ~25 km² hexagons. Zoom in to a city or region to list them.</p>
@@ -168,6 +169,9 @@
         </label>
         <input name="isp" id="f-isp-other" maxlength="80" placeholder="Provider name" hidden />
         <p class="hint" id="isp-hint"></p>
+        <div class="isp-check" id="isp-check" aria-live="polite"></div>
+        <input type="hidden" name="city" />
+        <input type="hidden" name="area" />
         <div class="form-row">
           <label>Alert radius, km<input name="radiusKm" inputmode="decimal" placeholder="3" /></label>
           <label>Latitude<input name="lat" required inputmode="decimal" /></label>
@@ -198,7 +202,7 @@
         <span><i class="sw planned"></i>planned</span>
         <span><i class="sw upcoming"></i>next 7 days</span>
         <span><i class="sw site"></i>client</span>
-        <span><i class="sw net"></i>internet drop</span>
+        <span><i class="sw net"></i>internet outage</span>
       </div>
     </div>
     <div class="isp-card" id="isp-card" hidden aria-live="polite"></div>
