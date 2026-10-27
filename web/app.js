@@ -1259,6 +1259,21 @@ $('btn-alerts').addEventListener('click', async () => {
 
 // ------------------------------------------------------- place search --
 
+/** Short badge for what a suggestion stands for. */
+const KIND_BADGES = {
+  address: ['Exact', 'exact'],
+  estimated: ['On street', 'exact'],
+  nearest: ['Nearest address', 'approx'],
+  road: ['Street', 'approx'],
+  street: ['Street', 'approx'],
+  postcode: ['Postal code', 'approx'],
+  'postal-area': ['Postal area', 'approx'],
+};
+const kindBadge = (p) => {
+  const [text, tone] = KIND_BADGES[p.kind] || [p.precise ? 'Exact' : 'Area', p.precise ? 'exact' : ''];
+  return h('span', { class: `kind ${tone}`, text });
+};
+
 function attachSuggest(input, listEl, onPick) {
   let seq = 0;
   let results = [];
@@ -1270,10 +1285,15 @@ function attachSuggest(input, listEl, onPick) {
     const r = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`).then((x) => x.json());
     return r;
   };
-  const run = debounce(async () => {
+  const doSearch = async () => {
     const q = input.value.trim();
     if (q.length < 3) return close();
     const my = ++seq;
+    if (listEl.hidden || !listEl.querySelector('.busy')) {
+      listEl.textContent = '';
+      listEl.append(h('li', { class: 'busy' }, h('span', { class: 'spinner' }), 'Searching…'));
+      listEl.hidden = false;
+    }
     try {
       const r = await search(q);
       if (my !== seq) return;
@@ -1285,17 +1305,27 @@ function attachSuggest(input, listEl, onPick) {
         listEl.append(h('li', {}, h('button', { type: 'button', onclick: () => {
           close();
           onPick(p);
-        } }, p.label || p.full, h('small', { text: p.full }))));
+        } }, kindBadge(p), p.label || p.full, h('small', { text: p.full }))));
       listEl.hidden = false;
     } catch {
       close();
     }
-  }, 450);
-  input.addEventListener('input', () => {
+  };
+  const run = debounce(doSearch, 450);
+  input.addEventListener('input', (e) => {
     // Older matches belong to older text; never let Enter pick one of them.
     results = [];
     resultsFor = null;
-    run();
+    if (e.inputType === 'insertFromPaste') doSearch();
+    else run();
+  });
+  // A pasted address (often several lines off a website) arrives as one line.
+  input.addEventListener('paste', (e) => {
+    const text = e.clipboardData?.getData('text');
+    if (!text || !/[\r\n]/.test(text)) return;
+    e.preventDefault();
+    input.value = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean).join(', ');
+    input.dispatchEvent(new InputEvent('input', { inputType: 'insertFromPaste' }));
   });
   input.addEventListener('keydown', async (e) => {
     if (e.key === 'Escape') close();
@@ -1415,7 +1445,7 @@ async function placeDraft(lat, lon, place = null, site = null) {
   form.elements.lon.value = lon.toFixed(6);
   const addr = form.elements.address;
   if (place?.label && !site) {
-    addr.value = place.label;
+    addr.value = place.address || place.label;
     addr.dataset.auto = '1';
   }
   const box = $('lookup');
@@ -1438,7 +1468,7 @@ async function placeDraft(lat, lon, place = null, site = null) {
   renderLookup(info, site, place);
 }
 
-const KIND_NAMES = { road: 'the street', postcode: 'the postal code', town: 'the town', city: 'the city', village: 'the village', suburb: 'the neighbourhood', neighbourhood: 'the neighbourhood', municipality: 'the municipality', county: 'the county' };
+const KIND_NAMES = { road: 'the street', street: 'the street', postcode: 'the postal code', 'postal-area': 'the postal area', town: 'the town', city: 'the city', village: 'the village', suburb: 'the neighbourhood', neighbourhood: 'the neighbourhood', municipality: 'the municipality', county: 'the county' };
 
 /** Other clients pinned within `m` metres of a point. */
 function sitesNear(lat, lon, exceptId, m = 30) {
@@ -1455,8 +1485,12 @@ function renderLookup(info, site, place = null) {
   const province = info.provinceName || info.province || 'outside the covered provinces';
   box.append(h('div', { class: 'row' }, h('b', { text: 'Where' }), h('span', { text: `${info.address?.city ? `${info.address.city}, ` : ''}${province}` })));
   if (info.province && !info.covered) box.append(h('div', { class: 'row' }, h('b', { text: 'Note' }), h('span', { text: 'Power outages are not monitored in this province.' })));
-  if (place && !place.precise)
+  if (place?.kind === 'nearest')
+    box.append(h('div', { class: 'row warn' }, h('b', { text: 'Check' }), h('span', { text: 'Pinned at the nearest known address in that postal code. Drag the pin onto the site so outage distances are right.' })));
+  else if (place && !place.precise)
     box.append(h('div', { class: 'row warn' }, h('b', { text: 'Check' }), h('span', { text: `The search only matched ${KIND_NAMES[place.kind] || 'an area'}, not the building. Drag the pin onto the site so outage distances are right.` })));
+  else if (place?.kind === 'estimated')
+    box.append(h('div', { class: 'row' }, h('b', { text: 'Note' }), h('span', { text: 'Position estimated along the street. Check the pin is on the right building.' })));
   const lat = Number($('site-form').elements.lat.value);
   const lon = Number($('site-form').elements.lon.value);
   const twins = sitesNear(lat, lon, site?.id);

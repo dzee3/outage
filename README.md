@@ -74,8 +74,14 @@ To try it with sample data and no network: `DEMO=1 docker compose up -d --build`
 
 ## Client sites
 
-Click **+ Add client**, then either search an address or click the map to drop
-a pin (drag it to adjust). The dashboard then looks up:
+Click **+ Add client**, then either search or click the map to drop a pin (drag
+it to adjust). The search box takes an address pasted straight off a website
+(company name, unit, phone number and all), a street address, a postal code, or
+a business name. Each suggestion is labelled: **Exact** (the building),
+**On street** (estimated along the road), **Nearest address** (the closest known
+address to a postal code; drag the pin onto the site), or an area. Full postal
+codes aren't open data in Canada, so a postal code on its own lands on its area
+or, where OpenStreetMap has it, the exact code. The dashboard then looks up:
 
 - **Address** for the pin (OpenStreetMap / Nominatim).
 - **Power utility.** It checks published service-area boundaries first
@@ -186,8 +192,11 @@ non-commercial licence (CC BY-NC 4.0).
   Open Government Licence – Ontario. Downloaded by the server and refreshed weekly.
 - Internet providers: ISED National Broadband Map (Open Government Licence – Canada
   for the published data). Looked up per point and cached 30 days.
-- Addresses: © OpenStreetMap contributors via Nominatim, used under its usage
-  policy (at most one lookup a second, cached, attributed in the add-client panel).
+- Addresses: © OpenStreetMap contributors via Nominatim (at most one lookup a
+  second, cached) and Photon (photon.komoot.io, light use), attributed in the
+  add-client panel; street-address estimates and postal areas from Natural
+  Resources Canada's Geolocator API (geolocator.api.geo.ca, Open Government
+  Licence – Canada).
 - Map library: MapLibre GL JS (BSD-3-Clause). Fonts: IBM Plex Sans Condensed
   and Rajdhani (both OFL).
 

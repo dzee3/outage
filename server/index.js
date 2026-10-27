@@ -211,7 +211,7 @@ async function handle(req, res) {
     }
     if (p === '/api/geocode' && req.method === 'GET') {
       const results = await geocoder.search(url.searchParams.get('q'));
-      return json(res, 200, { results, attribution: '© OpenStreetMap contributors (Nominatim)' });
+      return json(res, 200, { results, attribution: '© OpenStreetMap contributors (Nominatim, Photon); Natural Resources Canada (Geolocator)' });
     }
     if (p === '/api/lookup' && req.method === 'GET') {
       const lat = Number(url.searchParams.get('lat'));

@@ -247,6 +247,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--edge-strong); ou
 .suggest button { width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; color: var(--text); }
 .suggest button:hover, .suggest button:focus { background: rgba(94, 240, 255, 0.1); outline: none; }
 .suggest small { display: block; color: var(--faint); font-size: 12px; }
+.suggest .kind { float: right; margin-left: 8px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--line); font: 600 11px var(--hud); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.suggest .kind.exact { color: var(--ok); border-color: rgba(70, 227, 155, 0.4); }
+.suggest .kind.approx { color: var(--planned); border-color: rgba(255, 176, 46, 0.4); }
+.suggest .busy { display: flex; gap: 8px; align-items: center; padding: 8px 10px; color: var(--muted); font-size: 13px; }
 .site-form { overflow: auto; flex: 1; min-height: 0; padding: 10px 14px 16px; display: grid; gap: 10px; align-content: start; }
 .draft-pin { width: 30px; height: 30px; cursor: grab; display: grid; place-items: center; }
 .draft-pin i { width: 20px; height: 20px; transform: rotate(45deg); border: 3px solid var(--cyan); background: rgba(5, 8, 11, 0.85); box-shadow: 0 0 14px var(--cyan); }
