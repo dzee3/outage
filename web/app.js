@@ -758,6 +758,7 @@ for (const b of document.querySelectorAll('.dock-btn')) b.addEventListener('clic
 $('panel-close').addEventListener('click', () => openPanel(null));
 $('btn-feeds').addEventListener('click', () => openPanel('sources'));
 $('kpi-clients').addEventListener('click', () => openPanel('clients'));
+$('kpi-net').addEventListener('click', () => openPanel('sources'));
 
 // ---------------------------------------------------------- outage list --
 
@@ -882,6 +883,13 @@ function renderSources() {
     list.append(card(s.internet, [
       h('p', { text: active.length ? `Province-wide drop now: ${active.map((p) => `${PROVINCE_NAMES[p.code]} (since ${LOCAL.format(new Date(p.since))})`).join('; ')}.` : 'No province-wide internet drop right now.' }),
       h('p', { text: nets.length ? `Provider networks dropping: ${nets.map((n) => `${n.name} (AS${n.asn}, since ${LOCAL.format(new Date(n.since))})`).join('; ')}.` : `Watching ${Object.keys(s.internet.networks || {}).length} provider networks (Bell, Rogers, Shaw, Telus, SaskTel, Eastlink, Cogeco…): all normal.` }),
+      (() => {
+        const long = [
+          ...Object.values(s.internet.provinces || {}).filter((p) => p.longRunning).map((p) => PROVINCE_NAMES[p.code]),
+          ...Object.values(s.internet.networks || {}).filter((n) => n.longRunning).map((n) => n.name),
+        ];
+        return long.length ? h('p', { text: `Ignored as long-running routing changes (open for more than 48 h): ${long.join(', ')}.` }) : null;
+      })(),
       s.internet.networksError ? h('p', { class: 'source-error', text: `Provider networks: ${s.internet.networksError}` }) : null,
       s.internet.error ? h('p', { class: 'source-error', text: `Last error: ${s.internet.error}` }) : null,
       h('p', { text: 'Data: IODA, Georgia Tech. Measured connectivity, not provider status pages.' }),

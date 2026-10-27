@@ -32,3 +32,18 @@ test('only events reaching "now" make a province active', () => {
   assert.equal(recent.length, 2, 'unknown entities ignored');
   assert.equal(summarizeIoda(null, codes, nowS).recent.length, 0);
 });
+
+import { summarizeIoda as sumIoda, summarizeNetworks as sumNets, MAX_OUTAGE_S } from '../server/sources/ioda.js';
+test('days-long "ongoing" BGP events are routing changes, not alerts', () => {
+  const nowS = 1793072793;
+  const codes = new Map([['1', 'NT'], ['2', 'ON']]);
+  const r = sumIoda([
+    { entity: { code: '1' }, from: nowS - 12 * 86400, until: nowS, score: 88735, datasource: 'bgp' },
+    { entity: { code: '2' }, from: nowS - 3600, until: nowS, score: 50, datasource: 'ping-slash24' },
+  ], codes, nowS);
+  assert.equal(r.provinces.NT.active, false);
+  assert.equal(r.provinces.NT.longRunning, true);
+  assert.equal(r.provinces.ON.active, true);
+  const nets = sumNets([{ entity: { code: '11814' }, from: nowS - MAX_OUTAGE_S - 60, until: nowS, datasource: 'bgp' }], new Map([['11814', 'Distributel']]), nowS);
+  assert.equal(nets[11814].active, false);
+});

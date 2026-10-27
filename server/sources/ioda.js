@@ -12,6 +12,12 @@ export const IODA_DASHBOARD = 'https://ioda.inetintel.cc.gatech.edu/country/CA';
 const LOOKBACK_S = 12 * 3600;
 /** An event whose end is this close to "now" is treated as still going. */
 const ONGOING_SLACK_S = 20 * 60;
+/**
+ * An "ongoing" event that started more than this long ago is almost always a
+ * lasting routing change (a network renumbered or rerouted), not an outage.
+ * It stays listed as long-running but raises no alert.
+ */
+export const MAX_OUTAGE_S = 48 * 3600;
 const ENTITY_TTL_MS = 24 * 3600_000;
 
 const PROVINCES = {
@@ -76,6 +82,10 @@ export function summarizeIoda(events, codeToProvince, nowS) {
       signal: String(event.datasource || ''),
     });
     if (!ongoing) continue;
+    if (nowS - from > MAX_OUTAGE_S) {
+      p.longRunning = true;
+      continue;
+    }
     p.active = true;
     p.score = Math.max(p.score, Number(event.score) || 0);
     if (event.datasource && !p.signals.includes(event.datasource))
@@ -98,6 +108,10 @@ export function summarizeNetworks(events, names, nowS) {
     const until = Number(event.until);
     if (!Number.isFinite(from) || !Number.isFinite(until)) continue;
     if (until < nowS - ONGOING_SLACK_S) continue;
+    if (nowS - from > MAX_OUTAGE_S) {
+      n.longRunning = true;
+      continue;
+    }
     n.active = true;
     n.score = Math.max(n.score, Number(event.score) || 0);
     if (event.datasource && !n.signals.includes(event.datasource)) n.signals.push(String(event.datasource));

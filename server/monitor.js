@@ -235,7 +235,7 @@ export function createMonitor({
         sourcesTotal: sourceViews.length,
         sitesAffected: sites.filter((s) => ['out', 'near', 'internet'].includes(s.impact.status)).length,
         sitesTotal: sites.length,
-        internetAlerts: Object.values(internet.provinces || {}).filter((p) => p.active).length,
+        internetAlerts: Object.values(internet.provinces || {}).filter((p) => p.active && coverage[p.code]).length,
         networkAlerts: Object.values(internet.networks || {}).filter((n) => n.active).length,
         bigOutages: rows.filter((r) => r.kind === 'unplanned' && (r.customers ?? 0) >= BIG_OUTAGE).length,
       },
