@@ -23,6 +23,8 @@
  * request a second, an identifying User-Agent, caching and attribution.
  */
 
+import { distanceKm } from './geo.js';
+
 const NOMINATIM = 'https://nominatim.openstreetmap.org';
 const PHOTON = 'https://photon.komoot.io/api/';
 const GEOLOCATOR = 'https://geolocator.api.geo.ca/';
@@ -387,4 +389,29 @@ export function createGeocoder({ request, minIntervalMs = 1100, log = console })
     /** Map point → nearest address (null when none). */
     reverse,
   };
+}
+
+/**
+ * A client saved on its town's centre (the old search often matched only the
+ * town) or exactly on another client → {geoChecked, lat, lon, city, area,
+ * label} for its building. Otherwise just {geoChecked: true}: a pin someone
+ * placed by hand, even far from the address, is never moved.
+ */
+export async function relocateSite(site, sites, geocoder) {
+  const done = { geoChecked: true };
+  const house = parseAddress(site.address).house?.toLowerCase();
+  if (!house) return done;
+  const best = (await geocoder.search(site.address)).find(
+    (p) => p.precise && (!p.houseNumber || p.houseNumber.toLowerCase() === house),
+  );
+  if (!best || distanceKm(best, site) <= 0.3) return done;
+  const sharesPoint = sites.some((o) => o.id !== site.id && o.lat === site.lat && o.lon === site.lon);
+  let onTownCentre = false;
+  const town = site.city || best.city;
+  if (!sharesPoint && town) {
+    const [hit] = await geocoder.search(`${town}${best.province ? `, ${best.province}` : ''}`);
+    onTownCentre = Boolean(hit && !hit.precise && distanceKm(hit, site) < 0.5);
+  }
+  if (!sharesPoint && !onTownCentre) return done;
+  return { ...done, lat: best.lat, lon: best.lon, city: best.city || site.city || '', area: best.area || '', label: best.label };
 }

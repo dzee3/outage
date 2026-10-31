@@ -8,7 +8,7 @@ import { albertaSources, ALBERTA_UNMONITORED } from './sources/alberta.js';
 import { canadaSources, CANADA_UNMONITORED } from './sources/canada.js';
 import { iodaSource } from './sources/ioda.js';
 import { createTerritory } from './territory.js';
-import { createGeocoder } from './geocode.js';
+import { createGeocoder, parseAddress, relocateSite } from './geocode.js';
 import { createIspLookup, watchedAsns, NBM_PAGE } from './isp.js';
 import { utilityById } from './utilities.js';
 import { demoSources, demoInternet } from './demo.js';
@@ -382,6 +382,33 @@ const backfillTimer = setInterval(async () => {
   if (todo.length) monitor.reassess();
 }, 60_000);
 backfillTimer.unref();
+
+// Clients saved before the address search improved can sit on a town's
+// centre (or on top of another client). Once per site, move them to their
+// building; hand-placed pins are left alone. See relocateSite.
+const geoTimer = setInterval(async () => {
+  if (config.demo) return;
+  const sites = store.listSites();
+  const site = sites.find((s) => !s.geoChecked && s.address && parseAddress(s.address).house);
+  if (!site) return;
+  try {
+    const patch = await relocateSite(site, sites, geocoder);
+    store.updateSite(site.id, patch);
+    if (patch.lat) {
+      console.log(`[sites] moved ${site.name} to ${patch.label}`);
+      delete patch.label;
+      backfillTried.delete(site.id);
+      if (!patch.area) {
+        const place = await geocoder.reverse(patch.lat, patch.lon).catch(() => null);
+        if (place?.area) store.updateSite(site.id, { area: place.area });
+      }
+      monitor.reassess();
+    }
+  } catch (error) {
+    console.error('[sites] address check failed', error.message);
+  }
+}, 20_000);
+geoTimer.unref();
 
 const territoryTimer = setInterval(() => {
   if (!config.demo)

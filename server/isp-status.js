@@ -391,7 +391,7 @@ export function matchNotice(notice, site) {
 }
 
 /** A site's ISP picture from the current notices. */
-export function ispStatusFor(site, notices, health) {
+export function ispStatusFor(site, notices, health, nowMs = Date.now()) {
   const key = providerKey(site.isp);
   if (!key) return site.isp ? { provider: null, supported: false } : null;
   const page = PROVIDER_PAGES[key];
@@ -404,7 +404,6 @@ export function ispStatusFor(site, notices, health) {
     if (match) hits.push({ id: n.id, kind: n.kind, match, internet: n.internet !== false, title: n.title, detail: n.detail, services: n.services, startMs: n.startMs, endMs: n.endMs, link: n.link });
   }
   hits.sort((a, b) => Number(b.internet) - Number(a.internet) || (a.match === 'area' ? 0 : 1) - (b.match === 'area' ? 0 : 1) || (a.kind === 'outage' ? 0 : 1) - (b.kind === 'outage' ? 0 : 1));
-  const nowMs = Date.now();
   // Only notices that affect Internet raise the client; phone/TV/mobile-only
   // notices at the address are shown, not alerted.
   const net = hits.filter((x) => x.internet && x.match === 'area');
@@ -526,5 +525,5 @@ export function createIspStatus({ request, requestText, geocoder, now = () => Da
     return Object.entries(state).flatMap(([key, s]) => (h[key].status === 'down' ? [] : s.notices || []));
   }
 
-  return { refresh, notices, health, statusFor: (site) => ispStatusFor(site, notices(), health()) };
+  return { refresh, notices, health, statusFor: (site) => ispStatusFor(site, notices(), health(), now()) };
 }

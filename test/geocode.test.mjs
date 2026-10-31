@@ -129,3 +129,21 @@ test('Photon results outside Canada are dropped; business names are kept in the 
   assert.equal(p.label, 'Marex Canada, 541 Kingsview Way SE, Airdrie, AB, T4A 0C9');
   assert.equal(p.precise, true);
 });
+
+test('relocateSite moves clients left on a town centre or on another client, never hand-placed pins', async () => {
+  const { relocateSite } = await import('../server/geocode.js');
+  const airdrie = { lat: 51.28597, lon: -114.01062, precise: false, kind: 'city', city: 'Airdrie', province: 'AB' };
+  const building = { lat: 51.2608, lon: -113.99736, precise: true, kind: 'address', houseNumber: '541', city: 'Airdrie', province: 'AB', area: 'Kingsview Industrial Park', label: '541 Kingsview Way SE, Airdrie' };
+  const geocoder = { search: async (q) => (/^541/.test(q) ? [building] : /^Airdrie/.test(q) ? [airdrie] : []) };
+  const marex = { id: 'm', address: '541 Kingsview Way SE #102, Airdrie, AB T4A 0C9', city: 'Airdrie', lat: 51.28597, lon: -114.01062 };
+  const dhc = { id: 'd', address: '108 Edmonton Trail NE #4, Airdrie, AB', city: 'Airdrie', lat: 51.28597, lon: -114.01062 };
+  const moved = await relocateSite(marex, [marex, dhc], geocoder);
+  assert.deepEqual([moved.lat, moved.lon, moved.area, moved.geoChecked], [51.2608, -113.99736, 'Kingsview Industrial Park', true]);
+  // On the town centre, alone: still moved.
+  assert.equal((await relocateSite(marex, [marex], geocoder)).lat, 51.2608);
+  // Placed by hand somewhere else: left alone, but marked checked.
+  const hand = { ...marex, lat: 51.27, lon: -114.03 };
+  assert.deepEqual(await relocateSite(hand, [hand], geocoder), { geoChecked: true });
+  // Already at the building.
+  assert.deepEqual(await relocateSite({ ...marex, lat: 51.2609, lon: -113.9973 }, [], geocoder), { geoChecked: true });
+});

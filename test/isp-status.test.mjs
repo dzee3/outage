@@ -65,7 +65,7 @@ test('Telus: every service kept, drawn as circles, only Internet ones alert', ()
   assert.equal(matchNotice(ok, { lat: 50.7245, lon: -113.963 }), 'area');
   assert.equal(matchNotice(ok, { lat: 50.70, lon: -113.99, city: 'Okotoks' }), 'city');
   assert.equal(matchNotice(cal, { lat: 51.045, lon: -114.07 }), 'area');
-  const s = ispStatusFor({ isp: 'Telus', lat: 51.0697, lon: -114.0175 }, n, { telus: { status: 'ok' } });
+  const s = ispStatusFor({ isp: 'Telus', lat: 51.0697, lon: -114.0175 }, n, { telus: { status: 'ok' } }, NOW);
   assert.equal(s.state, 'planned'); // starts 3 am ET, after NOW
   const phone = ispStatusFor({ isp: 'Telus', lat: 55.3, lon: -115.3 }, n, { telus: { status: 'ok' } });
   assert.equal(phone.state, 'nearby', 'a phone-only notice at the address is shown but does not alert');

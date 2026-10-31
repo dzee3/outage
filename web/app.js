@@ -93,6 +93,36 @@ const local = {
     }
   },
 };
+// ---------------------------------------------------------------- themes --
+// Dark: the HUD. Light: the "analytics bento" palette. Page colours live in
+// styles.css; these are the ones MapLibre draws with.
+const THEMES = {
+  dark: {
+    basemap: 'https://tiles.openfreemap.org/styles/dark',
+    colors: { unplanned: '#ff3b5c', 'planned-active': '#ffb02e', 'planned-upcoming': '#6fa8dc', site: '#5ef0ff', internet: '#a993ff' },
+    sites: { out: '#ff3b5c', near: '#ffb02e', internet: '#a993ff', planned: '#6fa8dc', ok: '#5ef0ff', 'no-coverage': '#7d8f9c' },
+    map: {
+      bg: '#070d12', water: '#04121b', boundary: '#2a4656', label: '#7f97a6', dim: '#020406', dimOpacity: 0.55,
+      provOn: '#3e7f8f', provOff: '#1d2c38', halo: '#05080b', stroke: '#05080b', selected: '#ffffff',
+      phone: '#8f86b8', planned: '#ffb02e', diamond: '#071017', siteText: '#cfeef5', glow: 1,
+    },
+  },
+  light: {
+    basemap: 'https://tiles.openfreemap.org/styles/positron',
+    colors: { unplanned: '#e4572e', 'planned-active': '#f0b429', 'planned-upcoming': '#4a86c8', site: '#2457d6', internet: '#7c6cf0' },
+    sites: { out: '#e4572e', near: '#e09b00', internet: '#7c6cf0', planned: '#4a86c8', ok: '#2457d6', 'no-coverage': '#8a949e' },
+    map: {
+      bg: '#eef1f4', water: '#d6e2ec', boundary: '#b9c3cc', label: '#5d6873', dim: '#eef1f4', dimOpacity: 0.7,
+      provOn: '#8a949e', provOff: '#d3d9df', halo: '#ffffff', stroke: '#ffffff', selected: '#14202b',
+      phone: '#a39cc7', planned: '#f0b429', diamond: '#ffffff', siteText: '#14202b', glow: 0,
+    },
+  },
+};
+let theme = local.get('theme') === 'light' ? 'light' : 'dark';
+const T = () => THEMES[theme].map;
+Object.assign(COLORS, THEMES[theme].colors);
+Object.assign(SITE_COLORS, THEMES[theme].sites);
+
 const debounce = (fn, ms) => {
   let t;
   return (...a) => {
@@ -150,7 +180,7 @@ const statusWord = (s) => ({ ok: 'live', stale: 'stale', down: 'down', off: 'off
 const state = {
   snap: null,
   lastOkAt: 0,
-  filter: 'all',
+  filter: 'now',
   province: local.get('provFilter') || '',
   search: '',
   selectedId: null,
@@ -178,16 +208,16 @@ const state = {
 
 // ------------------------------------------------------------------ map --
 
-const BASEMAP = 'https://tiles.openfreemap.org/styles/dark';
-const FALLBACK_STYLE = {
+const fallbackStyle = () => ({
   version: 8,
   sources: {},
-  layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#05080b' } }],
-};
+  layers: [{ id: 'background', type: 'background', paint: { 'background-color': T().bg } }],
+});
 let usingFallback = false;
+let everReady = false;
 const map = new maplibregl.Map({
   container: 'map',
-  style: BASEMAP,
+  style: THEMES[theme].basemap,
   bounds: CANADA,
   fitBoundsOptions: { padding: { top: 90, bottom: 80, left: 90, right: 40 } },
   attributionControl: { compact: true },
@@ -211,8 +241,8 @@ function diamond(color, size = 22) {
   g.translate(size / 2, size / 2);
   g.rotate(Math.PI / 4);
   g.shadowColor = color;
-  g.shadowBlur = 6;
-  g.fillStyle = '#071017';
+  g.shadowBlur = 6 * T().glow;
+  g.fillStyle = T().diamond;
   g.strokeStyle = color;
   g.lineWidth = 2.6;
   g.beginPath();
@@ -225,16 +255,17 @@ function diamond(color, size = 22) {
   return g.getImageData(0, 0, size * 2, size * 2);
 }
 
-/** Pull the OpenFreeMap dark style toward the HUD palette. */
+/** Pull the OpenFreeMap style toward the current theme's palette. */
 function tintBasemap() {
+  const t = T();
   for (const layer of map.getStyle().layers || []) {
     const id = layer.id;
     try {
-      if (layer.type === 'background') map.setPaintProperty(id, 'background-color', '#070d12');
-      else if (layer.type === 'fill' && /water/.test(id)) map.setPaintProperty(id, 'fill-color', '#04121b');
-      else if (layer.type === 'fill' && /landcover|landuse|park|wood|grass/.test(id)) map.setPaintProperty(id, 'fill-opacity', 0.25);
-      else if (layer.type === 'line' && /boundary|admin/.test(id)) map.setPaintProperty(id, 'line-color', '#2a4656');
-      else if (layer.type === 'symbol' && /place|label/.test(id) && layer.paint?.['text-color'] !== undefined) map.setPaintProperty(id, 'text-color', '#7f97a6');
+      if (layer.type === 'background') map.setPaintProperty(id, 'background-color', t.bg);
+      else if (layer.type === 'fill' && /water/.test(id)) map.setPaintProperty(id, 'fill-color', t.water);
+      else if (layer.type === 'fill' && /landcover|landuse|park|wood|grass/.test(id)) map.setPaintProperty(id, 'fill-opacity', theme === 'light' ? 0.5 : 0.25);
+      else if (layer.type === 'line' && /boundary|admin/.test(id)) map.setPaintProperty(id, 'line-color', t.boundary);
+      else if (layer.type === 'symbol' && /place|label/.test(id) && layer.paint?.['text-color'] !== undefined) map.setPaintProperty(id, 'text-color', t.label);
     } catch {
       /* layer without that property */
     }
@@ -246,13 +277,13 @@ function useFallback(reason) {
   usingFallback = true;
   console.warn('[map] basemap unavailable, using outlines only:', reason);
   $('map-note').hidden = false;
-  map.setStyle(FALLBACK_STYLE);
+  map.setStyle(fallbackStyle(), { diff: false });
 }
 const basemapTimer = setTimeout(() => {
   if (!mapReady) useFallback('timeout');
 }, 10_000);
 map.on('error', (e) => {
-  if (!mapReady && !usingFallback) useFallback(e?.error?.message || 'style error');
+  if (!everReady && !usingFallback) useFallback(e?.error?.message || 'style error');
 });
 
 const empty = () => ({ type: 'FeatureCollection', features: [] });
@@ -262,8 +293,11 @@ const BOLD_FONT = ['Noto Sans Bold'];
 map.on('style.load', () => {
   clearTimeout(basemapTimer);
   if (!usingFallback) tintBasemap();
-  for (const [status, color] of Object.entries(SITE_COLORS))
-    if (!map.hasImage(`site-${status}`)) map.addImage(`site-${status}`, diamond(color), { pixelRatio: 2 });
+  const t = T();
+  for (const [status, color] of Object.entries(SITE_COLORS)) {
+    if (map.hasImage(`site-${status}`)) map.removeImage(`site-${status}`);
+    map.addImage(`site-${status}`, diamond(color), { pixelRatio: 2 });
+  }
   const withText = !usingFallback;
 
   map.addSource('provinces', { type: 'geojson', data: '/data/provinces.geojson', promoteId: 'code' });
@@ -271,7 +305,7 @@ map.on('style.load', () => {
     id: 'prov-dim',
     type: 'fill',
     source: 'provinces',
-    paint: { 'fill-color': '#020406', 'fill-opacity': ['case', ['boolean', ['feature-state', 'covered'], false], 0, 0.55] },
+    paint: { 'fill-color': t.dim, 'fill-opacity': ['case', ['boolean', ['feature-state', 'covered'], false], 0, t.dimOpacity] },
   });
   map.addLayer({
     id: 'prov-internet',
@@ -284,7 +318,7 @@ map.on('style.load', () => {
     type: 'line',
     source: 'provinces',
     paint: {
-      'line-color': ['case', ['boolean', ['feature-state', 'internet'], false], COLORS.internet, ['boolean', ['feature-state', 'covered'], false], '#3e7f8f', '#1d2c38'],
+      'line-color': ['case', ['boolean', ['feature-state', 'internet'], false], COLORS.internet, ['boolean', ['feature-state', 'covered'], false], t.provOn, t.provOff],
       'line-width': ['case', ['boolean', ['feature-state', 'internet'], false], 2, 1],
       'line-opacity': 0.8,
     },
@@ -322,7 +356,7 @@ map.on('style.load', () => {
         'text-max-width': 9,
         'symbol-sort-key': ['get', 'rank'],
       },
-      paint: { 'text-color': ['get', 'color'], 'text-halo-color': '#05080b', 'text-halo-width': 1.6, 'text-opacity': 0.85 },
+      paint: { 'text-color': ['get', 'color'], 'text-halo-color': t.halo, 'text-halo-width': 1.6, 'text-opacity': 0.85 },
     });
 
   // Internet providers sampled in view (hexagon outlines).
@@ -341,21 +375,21 @@ map.on('style.load', () => {
     type: 'fill',
     source: 'isp-notices',
     filter: ['==', ['geometry-type'], 'Polygon'],
-    paint: { 'fill-color': ['case', ['==', ['get', 'kind'], 'planned'], '#ffb02e', ['get', 'internet'], COLORS.internet, '#8f86b8'], 'fill-opacity': ['case', ['get', 'internet'], 0.32, 0.2] },
+    paint: { 'fill-color': ['case', ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone], 'fill-opacity': ['case', ['get', 'internet'], 0.32, 0.2] },
   });
   map.addLayer({
     id: 'ispn-line',
     type: 'line',
     source: 'isp-notices',
     filter: ['==', ['geometry-type'], 'Polygon'],
-    paint: { 'line-color': ['case', ['==', ['get', 'kind'], 'planned'], '#ffb02e', ['get', 'internet'], COLORS.internet, '#8f86b8'], 'line-width': 1.4, 'line-opacity': 0.9 },
+    paint: { 'line-color': ['case', ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone], 'line-width': 1.4, 'line-opacity': 0.9 },
   });
   map.addLayer({
     id: 'ispn-glow',
     type: 'circle',
     source: 'isp-notices',
     filter: ['==', ['geometry-type'], 'Point'],
-    paint: { 'circle-radius': 16, 'circle-color': ['case', ['==', ['get', 'kind'], 'planned'], '#ffb02e', ['get', 'internet'], COLORS.internet, '#8f86b8'], 'circle-opacity': 0.22, 'circle-blur': 0.8 },
+    paint: { 'circle-radius': 16, 'circle-color': ['case', ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone], 'circle-opacity': 0.22, 'circle-blur': 0.8 },
   });
   map.addLayer({
     id: 'ispn-point',
@@ -364,8 +398,8 @@ map.on('style.load', () => {
     filter: ['==', ['geometry-type'], 'Point'],
     paint: {
       'circle-radius': 6,
-      'circle-color': '#05080b',
-      'circle-stroke-color': ['case', ['==', ['get', 'kind'], 'planned'], '#ffb02e', ['get', 'internet'], COLORS.internet, '#8f86b8'],
+      'circle-color': t.diamond,
+      'circle-stroke-color': ['case', ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone],
       'circle-stroke-width': 2.5,
     },
   });
@@ -405,7 +439,7 @@ map.on('style.load', () => {
       'circle-radius': radius,
       'circle-color': ['get', 'color'],
       'circle-opacity': ['match', ['get', 'kind'], 'planned-upcoming', 0.7, 0.95],
-      'circle-stroke-color': ['case', ['get', 'selected'], '#ffffff', '#05080b'],
+      'circle-stroke-color': ['case', ['get', 'selected'], t.selected, t.stroke],
       'circle-stroke-width': ['case', ['get', 'selected'], 2.5, 1.2],
     },
   });
@@ -441,12 +475,13 @@ map.on('style.load', () => {
       },
       paint: {
         'text-color': ['get', 'color'],
-        'text-halo-color': '#05080b',
+        'text-halo-color': t.halo,
         'text-halo-width': 1.8,
       },
     });
 
   mapReady = true;
+  everReady = true;
   applyLayerVisibility();
   loadTerritories();
   if (state.snap) renderMap();
@@ -502,17 +537,25 @@ function applyLayerVisibility() {
   if (L.isp) loadIspInView();
 }
 
-function visibleRows() {
-  const rows = state.snap?.rows || [];
-  const f = state.filter;
-  return rows.filter((r) => {
-    if (state.province && r.province !== state.province) return false;
-    if (f === 'all') return r.kind !== 'planned-upcoming';
-    if (f === 'unplanned') return r.kind === 'unplanned';
-    if (f === 'planned') return r.kind === 'planned-active';
-    if (f === 'upcoming') return r.kind === 'planned-upcoming';
-    return true;
-  });
+// The default views show what started in the last week; long-running jobs
+// (months-old maintenance, stale notices) only appear under "All".
+const RECENT_MS = 7 * 86400_000;
+const isRecent = (startMs) => !startMs || Date.now() - startMs <= RECENT_MS;
+/** Provider notice → the same kinds as utility rows. */
+const ispKind = (n) => (n.kind !== 'planned' ? 'unplanned' : n.startMs && n.startMs > Date.now() ? 'planned-upcoming' : 'planned-active');
+
+function passesFilter(kind, startMs, province, f = state.filter) {
+  if (state.province && province && province !== state.province) return false;
+  if (f === 'all') return true;
+  if (kind !== 'planned-upcoming' && !isRecent(startMs)) return false;
+  if (f === 'unplanned') return kind === 'unplanned';
+  if (f === 'planned') return kind === 'planned-active';
+  if (f === 'upcoming') return kind === 'planned-upcoming';
+  return kind !== 'planned-upcoming'; // now
+}
+
+function visibleRows(f) {
+  return (state.snap?.rows || []).filter((r) => passesFilter(r.kind, r.startMs, r.province, f));
 }
 
 function siteDetail(s) {
@@ -538,9 +581,9 @@ function circlePolygon(c, steps = 48) {
 }
 
 const ISP_NAMES = { telus: 'Telus', rogers: 'Rogers / Shaw', teksavvy: 'TekSavvy', sasktel: 'SaskTel' };
-/** Provider notices for the Outages panel's Internet view. */
-function visibleIspNotices() {
-  return (state.snap?.ispNotices || []).filter((n) => !state.province || !n.province || n.province === state.province);
+/** Provider notices that pass the current filter. */
+function visibleIspNotices(f) {
+  return (state.snap?.ispNotices || []).filter((n) => passesFilter(ispKind(n), n.startMs, n.province, f));
 }
 
 function renderMap() {
@@ -560,8 +603,7 @@ function renderMap() {
   }
   map.getSource('areas').setData({ type: 'FeatureCollection', features: areas });
   const ispFeatures = [];
-  for (const n of state.snap.ispNotices || []) {
-    if (state.province && n.province && n.province !== state.province) continue;
+  for (const n of visibleIspNotices()) {
     const props = { id: n.id, kind: n.kind, internet: n.internet !== false };
     for (const c of n.circles || []) ispFeatures.push({ type: 'Feature', properties: props, geometry: circlePolygon(c) });
     if (n.circles?.length) continue;
@@ -583,7 +625,7 @@ function renderMap() {
         name: s.name,
         detail: siteDetail(s),
         status: s.impact.status,
-        color: s.impact.status === 'ok' ? '#cfeef5' : SITE_COLORS[s.impact.status],
+        color: s.impact.status === 'ok' ? T().siteText : SITE_COLORS[s.impact.status],
         rank: rank[s.impact.status],
       },
       geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
@@ -737,7 +779,7 @@ function ispNoticePopup(n) {
   return h('div', { class: 'pop' },
     h('div', {
       class: 'pop-kind',
-      style: `color:${n.kind === 'planned' ? '#ffb02e' : n.internet === false ? '#a9a2cf' : COLORS.internet}`,
+      style: `color:${n.kind === 'planned' ? 'var(--planned-text)' : n.internet === false ? 'var(--muted)' : 'var(--internet-text)'}`,
       text: `${n.internet === false ? 'Provider (not Internet)' : 'Internet'}: ${n.kind === 'planned' ? 'planned maintenance' : 'outage notice'}`,
     }),
     h('h4', { text: `${provider} · ${n.title}` }),
@@ -784,9 +826,9 @@ function sitePopup(s) {
     ),
     hits.length ? h('ul', {}, hits) : null,
     ispLineEl(impact.isp),
-    impact.network ? h('p', { style: 'color:#c7b8ff', text: `${impact.network.name}'s network shows a drop since ${LOCAL.format(new Date(impact.network.since))} (IODA ${impact.network.signals.join(', ')}). National network signal, may not be this site.` }) : null,
-    internet ? h('p', { style: 'color:#c7b8ff', text: `Internet connectivity across ${PROVINCE_NAMES[impact.province]} dropped ${ago(internet.since)} (IODA). Province-wide, not site-specific.` }) : null,
-    impact.status === 'no-coverage' ? h('p', { style: 'color:#9fb4c2', text: u && !u.monitored ? `${u.name} publishes no live outage map, so this site cannot be checked automatically.` : `Power outages aren't monitored in ${PROVINCE_NAMES[impact.province] || 'this area'}.` }) : null,
+    impact.network ? h('p', { style: 'color:var(--internet-text)', text: `${impact.network.name}'s network shows a drop since ${LOCAL.format(new Date(impact.network.since))} (IODA ${impact.network.signals.join(', ')}). National network signal, may not be this site.` }) : null,
+    internet ? h('p', { style: 'color:var(--internet-text)', text: `Internet connectivity across ${PROVINCE_NAMES[impact.province]} dropped ${ago(internet.since)} (IODA). Province-wide, not site-specific.` }) : null,
+    impact.status === 'no-coverage' ? h('p', { style: 'color:var(--muted)', text: u && !u.monitored ? `${u.name} publishes no live outage map, so this site cannot be checked automatically.` : `Power outages aren't monitored in ${PROVINCE_NAMES[impact.province] || 'this area'}.` }) : null,
     s.notes ? h('p', { text: s.notes }) : null,
     h('div', { class: 'pop-actions' }, h('button', { class: 'btn', type: 'button', text: 'Edit client', onclick: () => openSitePanel(s) })),
   );
@@ -838,12 +880,19 @@ function renderTop() {
   $('k-label').textContent = noData ? 'feeds down' : 'customers out';
   $('kpi-out').classList.toggle('alert', !noData && t.bigOutages > 0);
   const n = (v) => (noData ? '–' : fmt(v));
-  $('k-unplanned').textContent = n(t.outages);
-  $('k-planned').textContent = n(t.plannedActive);
+  // Counts follow the default view: what started in the last 7 days.
+  const recent = (s.rows || []).filter((r) => r.kind !== 'planned-upcoming' && isRecent(r.startMs));
+  const recentIsp = (s.ispNotices || []).filter((x) => ispKind(x) !== 'planned-upcoming' && isRecent(x.startMs));
+  const unplannedNow = recent.filter((r) => r.kind === 'unplanned').length;
+  const plannedNow = recent.filter((r) => r.kind === 'planned-active').length;
+  const olderPlanned = (s.rows || []).filter((r) => r.kind === 'planned-active').length - plannedNow;
+  $('k-unplanned').textContent = n(unplannedNow);
+  $('k-planned').textContent = n(plannedNow);
+  $('kpi-counts').title = `Power outages and planned work that started in the last 7 days.${olderPlanned > 0 ? ` ${olderPlanned} longer-running planned job${olderPlanned === 1 ? '' : 's'} under Outages → All.` : ''}`;
   $('k-clients').textContent = t.sitesTotal ? `${t.sitesAffected}/${t.sitesTotal}` : '0';
   $('kpi-clients').classList.toggle('alert', t.sitesAffected > 0);
   // Provider-reported Internet outages (not planned work) plus IODA drops.
-  const ispOut = (s.ispNotices || []).filter((n) => n.kind === 'outage' && n.internet !== false).length;
+  const ispOut = recentIsp.filter((x) => x.kind === 'outage' && x.internet !== false).length;
   const netAlerts = ispOut + (t.internetAlerts || 0) + (t.networkAlerts || 0);
   $('kpi-net').title = `${ispOut} Internet outage${ispOut === 1 ? '' : 's'} reported by providers (Telus, Rogers/Shaw, TekSavvy, SaskTel)` +
     `, ${t.internetAlerts || 0} province-wide drop${t.internetAlerts === 1 ? '' : 's'} and ${t.networkAlerts || 0} provider network drop${t.networkAlerts === 1 ? '' : 's'} (IODA). Click for the list.`;
@@ -853,7 +902,7 @@ function renderTop() {
   $('feeds-dot').dataset.status = down.length ? 'down' : stale.length ? 'stale' : 'ok';
   $('feeds-text').textContent = `${live}/${s.sources.length} live`;
   $('btn-feeds').title = down.length ? `Down: ${down.map((x) => x.name).join(', ')}` : 'All utility feeds answering';
-  $('c-outages').textContent = String(t.outages + t.plannedActive || '');
+  $('c-outages').textContent = String(unplannedNow + plannedNow + recentIsp.filter((x) => x.kind === 'outage' && x.internet !== false).length || '');
   $('c-clients').textContent = t.sitesAffected ? String(t.sitesAffected) : '';
   stampUpdated();
 }
@@ -884,10 +933,8 @@ $('panel-close').addEventListener('click', () => openPanel(null));
 $('btn-feeds').addEventListener('click', () => openPanel('sources'));
 $('kpi-clients').addEventListener('click', () => openPanel('clients'));
 $('kpi-net').addEventListener('click', () => {
-  state.filter = 'internet';
-  for (const o of document.querySelectorAll('.segmented button')) o.setAttribute('aria-pressed', String(o.dataset.filter === 'internet'));
   if (state.panel !== 'outages') openPanel('outages');
-  renderOutageList();
+  setFilter('now');
 });
 
 // ---------------------------------------------------------- outage list --
@@ -906,34 +953,21 @@ $('prov-filter').addEventListener('change', (e) => {
   renderMap();
 });
 
-function renderIspList() {
-  const list = $('outage-list');
-  const q = state.search.trim().toLowerCase();
-  const items = visibleIspNotices()
-    .filter((n) => !q || [n.title, n.detail, ISP_NAMES[n.provider], (n.services || []).join(' '), PROVINCE_NAMES[n.province]].some((v) => v && v.toLowerCase().includes(q)))
-    .sort((a, b) => (a.kind === 'planned') - (b.kind === 'planned') || Number(b.internet !== false) - Number(a.internet !== false) || (b.startMs ?? 0) - (a.startMs ?? 0));
-  list.textContent = '';
-  const pages = Object.values(state.snap.ispSources || {});
-  if (!items.length) {
-    list.append(h('li', { class: 'empty' },
-      h('p', { text: q || state.province ? 'Nothing matches that filter.' : 'No provider outage notices right now.' }),
-      h('p', { text: pages.length ? `Pages answering: ${pages.filter((x) => x.status !== 'down').map((x) => x.name).join(', ') || 'none'}.` : '' }),
-    ));
-    return;
-  }
-  for (const n of items) {
-    const t = n.kind === 'planned' ? `Planned${n.startMs ? `, ${new Date(n.startMs).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}` : n.startMs ? `Out ${duration(n.startMs)}` : '';
-    list.append(h('li', {},
-      h('button', { type: 'button', class: 'item', dataset: { kind: n.kind === 'planned' ? 'planned-active' : n.internet === false ? 'phone' : 'internet' }, onclick: () => selectIspNotice(n) },
-        h('span', { class: 'item-bar', 'aria-hidden': 'true' }),
-        h('span', {},
-          h('span', { class: 'item-title' }, n.province ? h('span', { class: 'prov-tag', text: n.province }) : null, n.title),
-          h('span', { class: 'item-meta', text: [ISP_NAMES[n.provider], (n.services || []).join(', '), t].filter(Boolean).join(' · ') }),
-        ),
-        h('span', { class: 'item-num' }, n.internet !== false ? 'NET' : 'PHONE', h('small', { text: n.internet !== false ? 'internet' : 'other' })),
+function ispItem(n) {
+  const t = n.kind === 'planned'
+    ? n.startMs && n.startMs > Date.now() ? `Starts ${when(n.startMs, n.province) || 'soon'}` : 'Planned work'
+    : n.startMs ? `Out ${duration(n.startMs)}` : 'Reported';
+  const net = n.internet !== false;
+  return h('li', {},
+    h('button', { type: 'button', class: 'item', dataset: { kind: n.kind === 'planned' ? 'planned-active' : net ? 'internet' : 'phone' }, onclick: () => selectIspNotice(n) },
+      h('span', { class: 'item-bar', 'aria-hidden': 'true' }),
+      h('span', {},
+        h('span', { class: 'item-title' }, n.province ? h('span', { class: 'prov-tag', text: n.province }) : null, n.title),
+        h('span', { class: 'item-meta', text: [ISP_NAMES[n.provider] || n.provider, (n.services || []).join(', '), t].filter(Boolean).join(' · ') }),
       ),
-    ));
-  }
+      h('span', { class: 'item-num' }, net ? 'NET' : 'PHONE', h('small', { text: net ? 'internet' : 'phone/TV' })),
+    ),
+  );
 }
 
 function selectIspNotice(n) {
@@ -945,40 +979,65 @@ function selectIspNotice(n) {
   openPopup([cs[0].lon, cs[0].lat], ispNoticePopup(n));
 }
 
+function powerItem(r) {
+  const t = r.kind === 'planned-upcoming' ? `Starts ${when(r.startMs, r.province) || 'soon'}` : r.startMs ? `Out ${duration(r.startMs)}` : r.status || '';
+  return h('li', {},
+    h('button', { type: 'button', class: `item${r.stableId === state.selectedId ? ' active' : ''}`, dataset: { kind: r.kind }, onclick: () => selectOutage(r.stableId) },
+      h('span', { class: 'item-bar', 'aria-hidden': 'true' }),
+      h('span', {},
+        h('span', { class: 'item-title' }, h('span', { class: 'prov-tag', text: r.province }), placeName(r)),
+        h('span', { class: 'item-meta', text: [utilityName(r.utility), t].filter(Boolean).join(' · ') }),
+      ),
+      h('span', { class: 'item-num' }, customersText(r), h('small', { text: 'customers' })),
+    ),
+  );
+}
+
+/** Utility outages and provider notices in one list, grouped by kind. */
 function renderOutageList() {
-  if (state.filter === 'internet') return renderIspList();
   const list = $('outage-list');
   const q = state.search.trim().toLowerCase();
   const order = { unplanned: 0, 'planned-active': 1, 'planned-upcoming': 2 };
   const rows = visibleRows()
-    .filter((r) => !q || [r.area, r.cause, r.status, utilityName(r.utility), PROVINCE_NAMES[r.province]].some((v) => v && v.toLowerCase().includes(q)))
+    .filter((r) => !q || [r.area, r.cause, r.status, utilityName(r.utility), PROVINCE_NAMES[r.province], 'power'].some((v) => v && v.toLowerCase().includes(q)))
     .sort((a, b) =>
       a.kind === 'planned-upcoming' && b.kind === 'planned-upcoming'
         ? (a.startMs ?? 0) - (b.startMs ?? 0)
         : order[a.kind] - order[b.kind] || (b.customers ?? -1) - (a.customers ?? -1),
     );
+  const notices = visibleIspNotices()
+    .filter((n) => !q || [n.title, n.detail, ISP_NAMES[n.provider], (n.services || []).join(' '), PROVINCE_NAMES[n.province], 'internet'].some((v) => v && v.toLowerCase().includes(q)))
+    .sort((a, b) => Number(b.internet !== false) - Number(a.internet !== false) || (b.startMs ?? 0) - (a.startMs ?? 0));
   list.textContent = '';
-  if (!rows.length) {
+  if (!rows.length && !notices.length) {
     const live = state.snap.sources.filter((s) => s.status !== 'down').length;
     list.append(h('li', { class: 'empty' },
-      h('p', { text: q || state.province ? 'Nothing matches that filter.' : 'No outages reported right now.' }),
+      h('p', { text: q || state.province ? 'Nothing matches that filter.' : state.filter === 'all' ? 'No outages reported right now.' : 'Nothing new in the last 7 days.' }),
       h('p', { text: `${live} of ${state.snap.sources.length} utility feeds are answering.` }),
     ));
-    return;
   }
-  for (const r of rows.slice(0, 400)) {
-    const t = r.kind === 'planned-upcoming' ? `Starts ${when(r.startMs, r.province) || 'soon'}` : r.startMs ? `Out ${duration(r.startMs)}` : r.status || '';
-    list.append(h('li', {},
-      h('button', { type: 'button', class: `item${r.stableId === state.selectedId ? ' active' : ''}`, dataset: { kind: r.kind }, onclick: () => selectOutage(r.stableId) },
-        h('span', { class: 'item-bar', 'aria-hidden': 'true' }),
-        h('span', {},
-          h('span', { class: 'item-title' }, h('span', { class: 'prov-tag', text: r.province }), placeName(r)),
-          h('span', { class: 'item-meta', text: [utilityName(r.utility), t].filter(Boolean).join(' · ') }),
-        ),
-        h('span', { class: 'item-num' }, customersText(r), h('small', { text: 'customers' })),
-      ),
-    ));
+  // Within each kind: power outages first (biggest first), then provider notices.
+  let budget = 500;
+  for (const kind of Object.keys(order)) {
+    for (const r of rows) if (r.kind === kind && budget-- > 0) list.append(powerItem(r));
+    for (const n of notices) if (ispKind(n) === kind && budget-- > 0) list.append(ispItem(n));
   }
+  // Say how much "All" adds, so older jobs are never silently lost.
+  if (state.filter !== 'all' && !q) {
+    const hidden = visibleRows('all').filter((r) => r.kind !== 'planned-upcoming' && !isRecent(r.startMs)).length +
+      visibleIspNotices('all').filter((n) => ispKind(n) !== 'planned-upcoming' && !isRecent(n.startMs)).length;
+    if (hidden)
+      list.append(h('li', { class: 'older' },
+        h('button', { type: 'button', onclick: () => setFilter('all') }, `${hidden} older outage${hidden === 1 ? '' : 's'} (started over 7 days ago) under All`),
+      ));
+  }
+}
+
+function setFilter(f) {
+  state.filter = f;
+  for (const o of document.querySelectorAll('.segmented button')) o.setAttribute('aria-pressed', String(o.dataset.filter === f));
+  renderOutageList();
+  renderMap();
 }
 
 // ------------------------------------------------------------ site list --
@@ -1146,8 +1205,8 @@ function renderHistory() {
       return e;
     };
     for (const v of [0, top / 2, top]) {
-      el('line', { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), stroke: 'rgba(159,180,194,0.18)' });
-      el('text', { x: pad.l - 6, y: y(v) + 4, 'text-anchor': 'end', fill: '#9fb4c2', 'font-size': 11 }).textContent = fmt(v);
+      el('line', { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), style: 'stroke:var(--line)' });
+      el('text', { x: pad.l - 6, y: y(v) + 4, 'text-anchor': 'end', style: 'fill:var(--muted)', 'font-size': 11 }).textContent = fmt(v);
     }
     for (let i = ids.length - 1; i >= 0; i--) {
       const upper = pts.map((p, j) => `${x(p.t)},${y(stacks[j][i])}`);
@@ -1158,7 +1217,7 @@ function renderHistory() {
     const tickEvery = hours > 12 ? 6 : hours > 4 ? 2 : 1;
     const first = Math.ceil(t0 / (tickEvery * 3600_000)) * tickEvery * 3600_000;
     for (let t = first; t <= t1; t += tickEvery * 3600_000)
-      el('text', { x: x(t), y: H - 6, 'text-anchor': 'middle', fill: '#9fb4c2', 'font-size': 11 }).textContent = LOCAL.format(new Date(t));
+      el('text', { x: x(t), y: H - 6, 'text-anchor': 'middle', style: 'fill:var(--muted)', 'font-size': 11 }).textContent = LOCAL.format(new Date(t));
     box.append(svg);
     for (const id of ids) legend.append(h('span', {}, h('i', { style: `background:${PROVINCE_COLORS[id]}` }), id));
   }
@@ -1655,13 +1714,7 @@ for (const box of document.querySelectorAll('[data-layer]')) {
 
 // ---------------------------------------------------------- outage tools --
 
-for (const b of document.querySelectorAll('.segmented button'))
-  b.addEventListener('click', () => {
-    state.filter = b.dataset.filter;
-    for (const o of document.querySelectorAll('.segmented button')) o.setAttribute('aria-pressed', String(o === b));
-    renderOutageList();
-    renderMap();
-  });
+for (const b of document.querySelectorAll('.segmented button')) b.addEventListener('click', () => setFilter(b.dataset.filter));
 $('search').addEventListener('input', (e) => {
   state.search = e.target.value;
   renderOutageList();
@@ -1677,6 +1730,36 @@ function setTv(on) {
   if (on) openPanel(null);
   setTimeout(() => map.resize(), 50);
 }
+function paintThemeButton() {
+  const light = theme === 'light';
+  const b = $('btn-theme');
+  b.setAttribute('aria-pressed', String(light));
+  b.querySelector('.btn-label').textContent = light ? 'Dark' : 'Light';
+  b.title = light ? 'Switch to the dark theme' : 'Switch to the light theme';
+  b.querySelector('.ico-sun').hidden = light;
+  b.querySelector('.ico-moon').hidden = !light;
+}
+function setTheme(next) {
+  theme = next === 'light' ? 'light' : 'dark';
+  local.set('theme', theme);
+  if (theme === 'light') document.documentElement.dataset.theme = 'light';
+  else delete document.documentElement.dataset.theme;
+  document.querySelector('meta[name="color-scheme"]').content = theme;
+  Object.assign(COLORS, THEMES[theme].colors);
+  Object.assign(SITE_COLORS, THEMES[theme].sites);
+  paintThemeButton();
+  // A new style drops every layer; style.load adds them back in the new colours.
+  mapReady = false;
+  map.setStyle(usingFallback ? fallbackStyle() : THEMES[theme].basemap, { diff: false });
+  if (state.snap) {
+    renderTop();
+    renderOutageList();
+    renderSiteList();
+  }
+}
+paintThemeButton();
+$('btn-theme').addEventListener('click', () => setTheme(theme === 'light' ? 'dark' : 'light'));
+
 $('btn-tv').addEventListener('click', () => setTv(!document.body.classList.contains('tv')));
 
 // --------------------------------------------------------------- refresh --

@@ -83,7 +83,9 @@ address to a postal code; drag the pin onto the site), or an area. Full postal
 codes aren't open data in Canada, so a postal code on its own lands on its area
 or, where OpenStreetMap has it, the exact code. The dashboard then looks up:
 
-- **Address** for the pin (OpenStreetMap / Nominatim).
+- **Address** for the pin (OpenStreetMap / Nominatim). Clients saved before
+  the address search improved, and left on their town's centre (or on top of
+  another client), are moved to their building once, automatically.
 - **Power utility.** It checks published service-area boundaries first
   (Ontario's distributor map, FortisBC, Saskatoon L&P, Newfoundland Power), then
   municipal utilities by city, then the province's main utility. Alberta
@@ -106,6 +108,15 @@ Each site gets one status:
 | Planned work coming | Planned work within the radius in the next 7 days |
 | No outages nearby | Covered, and nothing nearby |
 | Power not monitored | Its utility (or province) has no live feed |
+
+## Views and theme
+
+- **Outages → Now** (the default) lists power and Internet outages that
+  started in the last 7 days. Long-running jobs and old provider notices only
+  appear under **All**; a line at the bottom of each list says how many are
+  hidden. The top counts follow the same 7-day rule.
+- **Light / Dark** (top right) switches between the dark HUD and a light
+  "analytics bento" theme. The choice is remembered in that browser.
 
 ## Map layers
 
@@ -197,8 +208,8 @@ non-commercial licence (CC BY-NC 4.0).
   add-client panel; street-address estimates and postal areas from Natural
   Resources Canada's Geolocator API (geolocator.api.geo.ca, Open Government
   Licence – Canada).
-- Map library: MapLibre GL JS (BSD-3-Clause). Fonts: IBM Plex Sans Condensed
-  and Rajdhani (both OFL).
+- Map library: MapLibre GL JS (BSD-3-Clause). Fonts: IBM Plex Sans Condensed,
+  Rajdhani and DM Sans (all OFL).
 
 ## Development
 

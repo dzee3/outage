@@ -63,6 +63,8 @@ export function validateSite(input, existing = {}) {
   // City and neighbourhood, used to match ISP notices that name places.
   if ('city' in input) site.city = clean(input.city, 80);
   if ('area' in input) site.area = clean(input.area, 80);
+  // Set once the address has been re-checked against the geocoders.
+  if ('geoChecked' in input) site.geoChecked = Boolean(input.geoChecked);
   if ('radiusKm' in input && input.radiusKm !== '' && input.radiusKm != null) {
     const r = Number(input.radiusKm);
     if (!Number.isFinite(r) || r < 0.2 || r > 50)
