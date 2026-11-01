@@ -204,6 +204,17 @@ export function createPeer({
     if (role === 'mirror' && body.role === 'owner') {
       queue.drop(body.applied);
       if (Array.isArray(body.sites?.list)) {
+        // First sync: this site's own clients join the shared list instead
+        // of being replaced. Any whose name the owner already has are left
+        // to the owner's copy.
+        if (queue.baseVersion() == null) {
+          const theirs = new Set(body.sites.list.map((x) => String(x.name || '').trim().toLowerCase()));
+          for (const site of store.listSites()) {
+            if (theirs.has(String(site.name || '').trim().toLowerCase())) continue;
+            const { id, ...input } = site;
+            queue.push({ kind: 'add', siteId: id, input });
+          }
+        }
         store.setSitesExact(body.sites.list);
         queue.setBase(body.sites.version);
         for (const op of queue.list()) {

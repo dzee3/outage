@@ -80,9 +80,18 @@ test('client list: owner pushes it, mirror edits queue and come back applied, la
   const a = ab.store.addSite({ name: 'Marex', lat: 51.26, lon: -113.997, isp: 'Rogers' });
   ns.store.addSite({ name: 'Old home list entry', lat: 44.6, lon: -63.6 });
   // First exchange: the mirror reports its version, the owner sends its list.
+  // Home's own client joins the shared list rather than being lost.
   ab.peer.absorb(ns.peer.payload());
   ns.peer.absorb(ab.peer.payload());
-  assert.deepEqual(ns.store.listSites().map((s) => s.id), [a.id]);
+  assert.deepEqual(ns.store.listSites().map((s) => s.name).sort(), ['Marex', 'Old home list entry']);
+  ab.peer.absorb(ns.peer.payload());
+  ns.peer.absorb(ab.peer.payload());
+  assert.deepEqual(ab.store.listSites().map((s) => s.name).sort(), ['Marex', 'Old home list entry']);
+  assert.equal(ns.queue.list().length, 0);
+  ab.store.removeSite(ab.store.listSites().find((s) => s.name === 'Old home list entry').id);
+  ab.peer.absorb(ns.peer.payload());
+  ns.peer.absorb(ab.peer.payload());
+  assert.deepEqual(ns.store.listSites().map((s) => s.id), [a.id], 'later syncs follow the office');
   // Edits at home: applied there at once and queued.
   const id = 'a3c8d1e2-0f4b-4c5d-8e9f-0a1b2c3d4e5f';
   ns.store.addSite({ name: 'New clinic', lat: 53.5, lon: -113.5 }, { id });
