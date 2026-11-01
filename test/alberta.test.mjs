@@ -168,3 +168,49 @@ test('connection check: targets, ping then TCP, two misses before down', async (
   assert.equal(wan.get('a').state, 'down');
   assert.equal(wan.get('a').since, 4000);
 });
+
+// Trimmed from the live Rogers pages (Oct 31, 2026): the Alberta page, and
+// the Ontario page every province got when the region cookie was missing.
+const ROGERS_AB = `<main><h1>Network Outages</h1><h2>Region: Alberta region</h2>
+<p>No outages</p><p>All networks and services running as expected. </p>
+<div><p><b>Service Interruption |</b> Some customers near Evergreen in Calgary</p><p><b>Impacted services:</b>&nbsp;<span>Internet, TV, Home Phone </span></p><p><b>Cause:</b> Technical</p><p><b>Current status:</b>&nbsp;<span>Service restored</span> (updated 11:55 a.m. MT)</p></div>
+<div><h2>Planned Maintenance</h2><p><b>Planned maintenance |</b> <span>Nov 2 </span>- Airdrie (Wildflower)</p><p><b>Impacted services:&nbsp;</b><b>&nbsp;</b><span>Internet, TV, Home Phone </span>(including 911 calls)</p><p><b>Expected Start:</b>&nbsp;<span>Nov 2 </span>- 12:00 a.m. MT</p><p><b>Cause:</b> Network Upgrades</p><p><b>Current status:&nbsp;</b>This interruption is expected to last approximately six (6) hours. Service will be restored automatically when the maintenance is complete.</p></div>
+<div><p><b>Service Interruption |</b> Some customers near Bowness &amp; Montgomery in Calgary</p><p><b>Impacted services:</b> <span>Internet, TV</span></p><p><b>Current status:</b> Technicians on site, repairs underway</p></div>
+<h2>Learn more</h2><p>Outages guide</p><p>Learn more about service interruptions, network outages and how Rogers handles them–Internet, TV &amp; home phone.</p></main>`;
+const ROGERS_ON = `<main><h2>Region: Ontario region</h2><h2>Planned Maintenance</h2><p><b>Planned maintenance |</b> Nov 2- Manitouwadge</p><p><b>Expected Start:</b>&nbsp;Nov 2 - 6:00 a.m. ET</p><h2>Learn more</h2><p>Outages guide</p></main>`;
+
+test('Rogers: real Alberta page; restored and "Outages guide" are not outages; wrong region refused', async () => {
+  const { parseRogers } = await import('../server/isp-status.js');
+  const now = Date.parse('2026-11-01T02:00:00Z');
+  const n = parseRogers(ROGERS_AB, 'AB', now);
+  assert.deepEqual(n.map((x) => [x.kind, x.city, x.areas]), [
+    ['planned', 'Airdrie', ['Wildflower']],
+    ['outage', 'Calgary', ['Bowness', 'Montgomery']],
+  ]);
+  assert.equal(n[0].startMs, Date.parse('2026-11-02T06:00:00Z')); // midnight MT
+  assert.ok(!n.some((x) => /guide/i.test(x.title)));
+  assert.throws(() => parseRogers(ROGERS_ON, 'AB', now), /Ontario region.*Alberta/);
+  assert.deepEqual(parseRogers(ROGERS_ON, 'ON', now).map((x) => x.city), ['Manitouwadge']);
+});
+
+test('Rogers poll sends the province cookie and puts town-only notices on the map as "same town"', async () => {
+  const { createIspStatus, matchNotice } = await import('../server/isp-status.js');
+  const asked = [];
+  const requestText = async (url, opts) => {
+    if (!url.includes('rogers.com')) return '';
+    asked.push(opts?.headers?.Cookie);
+    return url.includes('province=AB') ? ROGERS_AB.replace('Bowness &amp; Montgomery in Calgary', 'in Calgary') : ROGERS_ON.replace('Ontario', /province=(\w\w)/.exec(url)[1] === 'ON' ? 'Ontario' : 'X');
+  };
+  const geocoder = { search: async (q) => (/^Calgary/.test(q) ? [{ lat: 51.045, lon: -114.06, city: 'Calgary' }] : /Wildflower/.test(q) ? [{ lat: 51.27, lon: -113.98, city: 'Airdrie' }] : /^Airdrie/.test(q) ? [{ lat: 51.29, lon: -114.01, city: 'Airdrie' }] : []) };
+  const isp = createIspStatus({ request: async () => ({}), requestText, requestRaw: async () => ({ status: 403, headers: new Map(), text: '<title>Just a moment...</title>' }), geocoder, now: () => Date.parse('2026-11-01T02:00:00Z'), log: {}, provincesFor: () => ['AB'] });
+  await isp.refresh();
+  assert.deepEqual(asked, ['province=AB; language=en']);
+  const h = isp.health();
+  assert.equal(h.rogers.status, 'ok', h.rogers.error);
+  assert.match(h.telus.error, /HTTP 403 \(Cloudflare bot check\)/);
+  const calgary = isp.notices().find((x) => x.city === 'Calgary');
+  assert.equal(calgary.circles[0].town, true);
+  assert.equal(matchNotice(calgary, { lat: 51.05, lon: -114.07 }), 'city', 'town-wide notice is "same town", not "here"');
+  const airdrie = isp.notices().find((x) => x.city === 'Airdrie');
+  assert.equal(matchNotice(airdrie, { lat: 51.271, lon: -113.981 }), 'area');
+});

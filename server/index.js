@@ -72,7 +72,7 @@ for (const src of sources) {
 const territory = createTerritory({ dataDir: config.dataDir, requestRaw, requestJson: request, now });
 const geocoder = createGeocoder({ request });
 const isp = createIspLookup({ request, dataDir: config.dataDir, now });
-const ispStatus = createIspStatus({ request, requestText, geocoder, now });
+const ispStatus = createIspStatus({ request, requestText, requestRaw, geocoder, now });
 const wan = createWanMonitor({ now });
 /** Everything ispStatus needs beyond the site itself. */
 const ispCtx = (site, extra = {}) => ({ wan: wan.get(site.id), ...extra });
@@ -181,10 +181,19 @@ function serveStatic(req, res, pathname) {
   if (!file.startsWith(WEB + path.sep) || !existsSync(file) || !statSync(file).isFile())
     return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
   const ext = path.extname(file);
+  // Cheap revalidation: unchanged files answer 304.
+  const modified = statSync(file).mtime.toUTCString();
+  if (req.headers['if-modified-since'] === modified) {
+    res.writeHead(304, { 'Last-Modified': modified });
+    return res.end();
+  }
   res.writeHead(200, {
+    'Last-Modified': modified,
     ...SECURITY_HEADERS,
     'Content-Type': TYPES[ext] || 'application/octet-stream',
-    'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
+    // The app's own files revalidate on every load, so a rebuild shows up
+    // at once (an hour-old app.js against new HTML leaves panels blank).
+    'Cache-Control': ['.html', '.js', '.css'].includes(ext) && !rel.startsWith('/vendor/') ? 'no-cache' : 'public, max-age=3600',
     ...(ext === '.html' ? { 'Content-Security-Policy': PAGE_CSP } : {}),
   });
   createReadStream(file).pipe(res);

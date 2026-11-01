@@ -28,6 +28,8 @@ const TTL_MS = 5 * 60_000;
 const STALE_DROP_MS = 45 * 60_000;
 const AREA_MATCH_KM = 2.5;
 const POINT_MATCH_KM = 3;
+// A notice that names only a town is drawn as a circle this size around it.
+const TOWN_KM = 5;
 const PROVINCES = ['BC', 'AB', 'SK', 'MB', 'ON', 'NB', 'NS', 'PE', 'NL'];
 const PROVINCE_NAMES = {
   BC: 'British Columbia', AB: 'Alberta', SK: 'Saskatchewan', MB: 'Manitoba', ON: 'Ontario',
@@ -180,7 +182,11 @@ const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8,
 /** Rogers outage page HTML (one province) → notices. */
 export function parseRogers(html, province, nowMs) {
   const lines = htmlToLines(html);
-  if (!lines.some((l) => /^Region:/i.test(l))) return null;
+  const region = lines.find((l) => /^Region:/i.test(l));
+  if (!region) return null;
+  // Rogers picks the region from a cookie; never file one province's page under another.
+  const want = PROVINCE_NAMES[province];
+  if (want && !fold(region).includes(fold(want))) throw new Error(`Rogers sent "${region}" when asked for ${want}`);
   const notices = [];
   let cur = null;
   const flush = () => {
@@ -189,8 +195,10 @@ export function parseRogers(html, province, nowMs) {
   };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const head = /^(Service Interruption|Planned maintenance|Service Outage|Outage)\s*\|?\s*(.*)$/i.exec(line);
-    if (head && !/^planned maintenance$/i.test(line)) {
+    // Real notices read "Service Interruption | ..." / "Planned maintenance | ...";
+    // the pipe keeps page text such as "Outages guide" from becoming a notice.
+    const head = /^(Service Interruption|Planned maintenance|Service Outage|Outage)\s*\|\s*(.*)$/i.exec(line);
+    if (head) {
       flush();
       let title = head[2].trim();
       if (!title && lines[i + 1] && !/^(Impacted|Cause|Current|Expected)/i.test(lines[i + 1])) title = lines[++i];
@@ -375,15 +383,18 @@ export function matchNotice(notice, site) {
   if (notice.cells?.length) {
     if (notice.cells.some((c) => inCell(p, c))) return 'area';
   }
-  if (notice.circles?.some((c) => distanceKm(p, c) <= c.km)) return 'area';
+  if (notice.circles?.some((c) => !c.town && distanceKm(p, c) <= c.km)) return 'area';
   if (notice.polygons?.length && pointInPolygons(p, notice.polygons)) return 'area';
   if (notice.point && notice.radiusKm && distanceKm(p, notice.point) <= notice.radiusKm) return 'area';
   for (const ap of notice.areaPoints || []) if (distanceKm(p, ap) <= AREA_MATCH_KM) return 'area';
+  // A circle round a whole town means "somewhere in this town", not here.
+  const inTown = notice.circles?.some((c) => c.town && distanceKm(p, c) <= c.km);
   const city = fold(site.city);
   const area = fold(site.area);
   if (area && notice.areas?.some((a) => fold(a) === area)) {
     if (!notice.city || !city || fold(notice.city) === city) return 'area';
   }
+  if (inTown) return 'city';
   if (city) {
     if (notice.city && fold(notice.city) === city) return 'city';
     if (notice.text && ` ${notice.text} `.includes(` ${city} `)) return 'city';
@@ -549,6 +560,22 @@ export function ispStatusFor(site, notices, health, nowMs = Date.now(), ctx = {}
 // --------------------------------------------------------------- poller ----
 
 const FEEDS = ['telus', 'rogers', 'teksavvy', 'sasktel', 'aea'];
+
+// Some provider sites refuse anything that does not look like a browser.
+export const BROWSER_HEADERS = Object.freeze({
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+  'Accept-Language': 'en-CA,en;q=0.9',
+});
+
+/** Why a site said no, from its answer: shown on the Sources panel. */
+export function blockedBy(r) {
+  const h = (k) => (typeof r.headers?.get === 'function' ? r.headers.get(k) : null) || '';
+  const text = String(r.text || '').slice(0, 3000);
+  if (h('cf-mitigated') || /just a moment|cf-chl|challenge-platform/i.test(text)) return ' (Cloudflare bot check)';
+  if (/akamai/i.test(h('server')) || /access denied[\s\S]*reference/i.test(text)) return ' (Akamai block)';
+  if (/cloudflare/i.test(h('server'))) return ' (Cloudflare)';
+  return '';
+}
 const EASTLINK = 'https://help.eastlink.ca/api/gis';
 const PROVIDERS_EASTLINK_PAGE = 'https://help.eastlink.ca/managing-your-account-billing/service-outage/';
 
@@ -571,7 +598,7 @@ export function readEastlinkOutage(json) {
   };
 }
 
-export function createIspStatus({ request, requestText, geocoder, now = () => Date.now(), log = console, provincesFor = () => PROVINCES }) {
+export function createIspStatus({ request, requestText, requestRaw = null, geocoder, now = () => Date.now(), log = console, provincesFor = () => PROVINCES }) {
   /** key → {notices, lastSuccessAt, lastAttemptAt, error} */
   const state = {};
   /** siteId → per-address check result (Eastlink) */
@@ -581,16 +608,14 @@ export function createIspStatus({ request, requestText, geocoder, now = () => Da
 
   async function load(key) {
     const nowMs = now();
-    if (key === 'telus') {
-      const json = await request('https://www.telus.com/outages/backend/outagesOverview/consumer', { headers: { Referer: 'https://www.telus.com/en/outages' } });
-      const n = parseTelus(json, nowMs);
-      if (!n) throw new Error('Unexpected Telus response');
-      return n;
-    }
+    if (key === 'telus') return loadTelus(nowMs);
     if (key === 'rogers') {
       const all = [];
       for (const prov of provincesFor()) {
-        const html = await requestText(`https://www.rogers.com/support/outage?province=${prov}`, { headers: { Accept: 'text/html' }, timeoutMs: 25_000 });
+        const html = await requestText(`https://www.rogers.com/support/outage?province=${prov}`, {
+          headers: { ...BROWSER_HEADERS, Accept: 'text/html', Cookie: `province=${prov}; language=en` },
+          timeoutMs: 25_000,
+        });
         const n = parseRogers(html, prov, nowMs);
         if (!n) throw new Error(`Unexpected Rogers page for ${prov}`);
         all.push(...n);
@@ -613,28 +638,58 @@ export function createIspStatus({ request, requestText, geocoder, now = () => Da
     return [];
   }
 
+  /** Telus's outage feed, asked for the way its own outage page asks. */
+  async function loadTelus(nowMs) {
+    const problems = [];
+    for (const seg of ['consumer', 'business']) {
+      const r = await (requestRaw || rawFromText)(`https://www.telus.com/outages/backend/outagesOverview/${seg}`, {
+        headers: { ...BROWSER_HEADERS, Accept: 'application/json, text/plain, */*', Referer: 'https://www.telus.com/en/ab/outages', 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' },
+      });
+      if (r.status === 200) {
+        let json = null;
+        try {
+          json = JSON.parse(r.text);
+        } catch {
+          /* fall through */
+        }
+        const n = json && parseTelus(json, nowMs);
+        if (n) return n;
+        problems.push(`${seg}: not the outage feed${blockedBy(r)}`);
+      } else problems.push(`${seg}: HTTP ${r.status}${blockedBy(r)}`);
+    }
+    throw new Error(`Telus refused (${problems.join('; ')})`);
+  }
+  const rawFromText = async (url, options) => ({ status: 200, headers: new Map(), text: JSON.stringify(await request(url, options)) });
+
   /** Put neighbourhoods named by Rogers on the map (cached; a few per poll). */
   async function locateAreas(notices) {
-    let budget = 12;
+    let budget = 14;
+    const lookup = async (key, query) => {
+      if (areaPointCache.has(key)) return areaPointCache.get(key);
+      if (budget-- <= 0) return undefined;
+      try {
+        const [hit] = await geocoder.search(query);
+        const pt = hit && Number.isFinite(hit.lat) ? { lat: hit.lat, lon: hit.lon, city: hit.city || null } : null;
+        areaPointCache.set(key, pt);
+        return pt;
+      } catch {
+        return undefined;
+      }
+    };
     for (const n of notices) {
       if (!n.city) continue;
+      const prov = PROVINCE_NAMES[n.province] || '';
+      const town = await lookup(fold(`|${n.city}|${n.province}`), `${n.city}, ${prov}`);
       n.areaPoints = [];
-      for (const area of n.areas.length ? n.areas : []) {
-        const key = fold(`${area}|${n.city}|${n.province}`);
-        if (!areaPointCache.has(key)) {
-          if (budget-- <= 0) continue;
-          try {
-            const [hit] = await geocoder.search(`${area}, ${n.city}, ${PROVINCE_NAMES[n.province] || ''}`);
-            areaPointCache.set(key, hit && fold(hit.city) === fold(n.city) ? { lat: hit.lat, lon: hit.lon } : null);
-          } catch {
-            continue;
-          }
-        }
-        const pt = areaPointCache.get(key);
-        if (pt) n.areaPoints.push(pt);
+      for (const area of n.areas || []) {
+        const pt = await lookup(fold(`${area}|${n.city}|${n.province}`), `${area}, ${n.city}, ${prov}`);
+        // Keep a neighbourhood only if it really is in that town.
+        if (pt && (!town || distanceKm(pt, town) <= 30)) n.areaPoints.push({ lat: pt.lat, lon: pt.lon });
       }
-      if (!n.point && n.areaPoints.length) n.point = n.areaPoints[0];
-      n.circles = n.areaPoints.map((p) => ({ ...p, km: AREA_MATCH_KM }));
+      if (n.areaPoints.length) n.circles = n.areaPoints.map((p) => ({ ...p, km: AREA_MATCH_KM }));
+      else if (town) n.circles = [{ lat: town.lat, lon: town.lon, km: TOWN_KM, town: true }];
+      else n.circles = [];
+      n.point ??= n.areaPoints[0] || (town ? { lat: town.lat, lon: town.lon } : null);
     }
   }
 
