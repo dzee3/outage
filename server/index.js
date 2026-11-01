@@ -3,6 +3,8 @@ import { readFileSync, existsSync, statSync, createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { requestJson, requestRaw, requestText } from './http.js';
+import { providerBoard } from './board.js';
+import { createWanMonitor } from './wan.js';
 import { createIspStatus } from './isp-status.js';
 import { albertaSources, ALBERTA_UNMONITORED } from './sources/alberta.js';
 import { canadaSources, CANADA_UNMONITORED } from './sources/canada.js';
@@ -71,6 +73,9 @@ const territory = createTerritory({ dataDir: config.dataDir, requestRaw, request
 const geocoder = createGeocoder({ request });
 const isp = createIspLookup({ request, dataDir: config.dataDir, now });
 const ispStatus = createIspStatus({ request, requestText, geocoder, now });
+const wan = createWanMonitor({ now });
+/** Everything ispStatus needs beyond the site itself. */
+const ispCtx = (site, extra = {}) => ({ wan: wan.get(site.id), ...extra });
 
 /** Who supplies a site: the technician's choice, else the territory lookup. */
 const utilityCache = new Map();
@@ -101,7 +106,7 @@ const monitor = createMonitor({
   provinces,
   coverage,
   utilityFor,
-  ispFor: config.demo ? null : (site) => ispStatus.statusFor(site),
+  ispFor: config.demo ? null : (site, ctx) => ispStatus.statusFor(site, ispCtx(site, ctx)),
   now,
 });
 if (!config.demo)
@@ -196,6 +201,15 @@ async function handle(req, res) {
         ...snap,
         ispNotices: ispStatus.notices().map(({ text, ...n }) => n),
         ispSources: ispStatus.health(),
+        ispBoard: providerBoard({
+          province: 'AB',
+          notices: ispStatus.notices(),
+          health: ispStatus.health(),
+          networks: snap.internet?.networks || {},
+          networkStatus: snap.internet?.status,
+          sites: snap.sites,
+          nowMs: now(),
+        }),
         demo: config.demo,
         canEdit: !config.editToken,
         editProtected: Boolean(config.editToken),
@@ -238,9 +252,10 @@ async function handle(req, res) {
     }
     if (p === '/api/isp/check' && req.method === 'GET') {
       const q = Object.fromEntries(url.searchParams);
-      const site = { lat: Number(q.lat), lon: Number(q.lon), isp: q.isp, city: q.city, area: q.area };
+      const site = { lat: Number(q.lat), lon: Number(q.lon), isp: q.isp, city: q.city, area: q.area, address: q.address, ispNetwork: q.ispNetwork };
       if (!Number.isFinite(site.lat) || !Number.isFinite(site.lon)) return json(res, 400, { error: 'lat and lon are required.' });
-      return json(res, 200, { status: ispStatus.statusFor(site) });
+      const net = monitor.snapshot()?.internet;
+      return json(res, 200, { status: ispStatus.statusFor(site, { networks: net?.networks || {}, networkStatus: net?.status, province: provinceOf(site, provinces) }) });
     }
     if (p === '/api/isp/area' && req.method === 'GET') {
       const b = String(url.searchParams.get('bbox') || '').split(',').map(Number);
@@ -357,7 +372,8 @@ const timer = setInterval(() => {
 // Provider outage pages: own 5-minute schedule; re-score sites when they change.
 async function pollIsps() {
   if (config.demo) return;
-  await ispStatus.refresh();
+  const sites = store.listSites();
+  await Promise.all([ispStatus.refresh(), ispStatus.refreshSites(sites), wan.run(sites)]);
   monitor.reassess();
 }
 pollIsps().catch((error) => console.error('[isp-status] poll failed', error));

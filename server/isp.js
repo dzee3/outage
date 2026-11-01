@@ -8,6 +8,8 @@ import path from 'node:path';
  * cached: provider footprints change a few times a year, not by the minute.
  */
 
+import { providerFor, registryAsns } from './providers.js';
+
 const HEX_API = 'https://ised-isde.canada.ca/app/scr/sittibc/web/api/hexagon';
 export const NBM_PAGE = 'https://ised-isde.canada.ca/app/scr/sittibc/web/bbmap?lang=eng#!/map';
 const CACHE_TTL_MS = 30 * 24 * 3600_000;
@@ -53,6 +55,10 @@ export const ISP_ASNS = Object.freeze([
 
 export function asnsFor(ispName) {
   const hit = ISP_ASNS.find((x) => x.match.test(String(ispName || '').trim()));
+  // Regional brands with their own network (Bell MTS, Bell Aliant) first.
+  if (hit && /^bell (mts|aliant)$/i.test(hit.name)) return { name: hit.name, asns: hit.asns };
+  const p = providerFor(ispName);
+  if (p?.asns.length) return { name: p.name, asns: p.asns };
   return hit ? { name: hit.name, asns: hit.asns } : null;
 }
 
@@ -60,6 +66,7 @@ export function asnsFor(ispName) {
 export function watchedAsns(sites = []) {
   const set = new Map();
   for (const x of ISP_ASNS) for (const a of x.asns) set.set(a, x.name);
+  for (const [a, name] of registryAsns()) set.set(a, name);
   for (const s of sites) {
     const hit = asnsFor(s.isp);
     if (hit) for (const a of hit.asns) set.set(a, hit.name);

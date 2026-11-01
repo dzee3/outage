@@ -1,6 +1,9 @@
 import { distanceKm, pointInPolygons } from './geo.js';
 import { closeRing, validRing } from './records.js';
 import { PROVINCE_ZONES, zonedToUtc } from './zones.js';
+import { providerFor, providerByKey } from './providers.js';
+import { loadAeaNotices, AEA_PAGE } from './sources/aea.js';
+import { parseAddress } from './geocode.js';
 
 /*
  * Internet-provider outage notices, read from each provider's own public
@@ -12,9 +15,13 @@ import { PROVINCE_ZONES, zonedToUtc } from './zones.js';
  *   TekSavvy   public Google My Maps layer                       → by location
  *   SaskTel    text list of reported outages                     → by city
  *
- * Bell's address check sits behind a CAPTCHA and is not automated; Bell
- * clients get a link to it. Providers without a public page rely on IODA's
- * network signals instead.
+ *   Eastlink   per-address outage lookup                         → per client
+ *   Alberta    Emergency Alert telecom / 911 alerts (polygons)   → by location
+ *
+ * Bell's address check sits behind a CAPTCHA and is not automated. Which
+ * provider a client name means, and which line a reseller rides, comes from
+ * providers.js. Providers without a public page rely on IODA's network
+ * signals and the optional per-client connection check instead.
  */
 
 const TTL_MS = 5 * 60_000;
@@ -35,21 +42,16 @@ export const PROVIDER_PAGES = Object.freeze({
   bell: { name: 'Bell', page: 'https://support.bell.ca/outage-check', manual: 'Bell checks outages by address behind a CAPTCHA, so it cannot be checked automatically.' },
   eastlink: { name: 'Eastlink', page: 'https://www.eastlink.ca/support', manual: 'Eastlink publishes no public outage map.' },
   cogeco: { name: 'Cogeco', page: 'https://support.cogeco.ca/hc/en-ca/articles/360062803733', manual: 'Cogeco shows outages only after signing in.' },
+  aea: { name: 'Alberta Emergency Alert', page: AEA_PAGE },
   xplore: { name: 'Xplore', page: 'https://www.xplore.ca/support/', manual: 'Xplore publishes no public outage map.' },
 });
 
-/** Which provider page covers a client's ISP name. */
+/** Which provider a client's ISP name means (registry key), or null. */
 export function providerKey(isp) {
+  const p = providerFor(isp);
+  if (p) return p.key;
   const s = String(isp || '').trim().toLowerCase();
-  if (!s) return null;
-  if (/^(rogers|shaw|fido)\b/.test(s)) return 'rogers';
-  if (/^(telus|koodo)\b/.test(s)) return 'telus';
-  if (/^teksavvy\b/.test(s)) return 'teksavvy';
-  if (/^sasktel\b/.test(s)) return 'sasktel';
-  if (/^(bell|virgin)\b/.test(s)) return 'bell';
-  if (/^eastlink\b/.test(s)) return 'eastlink';
   if (/^cogeco\b/.test(s)) return 'cogeco';
-  if (/^(xplore|xplornet)\b/.test(s)) return 'xplore';
   return null;
 }
 
@@ -390,37 +392,190 @@ export function matchNotice(notice, site) {
   return null;
 }
 
-/** A site's ISP picture from the current notices. */
-export function ispStatusFor(site, notices, health, nowMs = Date.now()) {
-  const key = providerKey(site.isp);
-  if (!key) return site.isp ? { provider: null, supported: false } : null;
-  const page = PROVIDER_PAGES[key];
-  if (page.manual) return { provider: key, name: page.name, supported: false, note: page.manual, link: page.page };
-  const h = health[key];
-  const hits = [];
-  for (const n of notices) {
-    if (n.provider !== key) continue;
-    const match = matchNotice(n, site);
-    if (match) hits.push({ id: n.id, kind: n.kind, match, internet: n.internet !== false, title: n.title, detail: n.detail, services: n.services, startMs: n.startMs, endMs: n.endMs, link: n.link });
+const LABEL = { telus: 'Telus', rogers: 'Rogers / Shaw', teksavvy: 'TekSavvy', sasktel: 'SaskTel' };
+const hitOf = (n, match, via = null) => ({
+  id: n.id, provider: n.provider, via, kind: n.kind, match, internet: n.internet !== false, title: n.title, detail: n.detail,
+  services: n.services, startMs: n.startMs, endMs: n.endMs, link: n.link,
+});
+const rank = (x) => (x.internet ? 0 : 2) + (x.match === 'area' ? 0 : 1);
+
+/**
+ * A site's internet picture: one line per signal (provider map, address
+ * lookup, the line a reseller rides, Alberta alerts, the provider's network,
+ * the client's own connection), and an overall state:
+ *   out      a signal says this client's internet is down here
+ *   planned  provider maintenance here, not started
+ *   nearby   something nearby or same town, or phone/TV only, or only possible
+ *   clear    every signal that exists is clear
+ *   unknown  no signal could be read
+ * @param {object} ctx {siteCheck, wan, networks, networkStatus}
+ */
+export function ispStatusFor(site, notices, health, nowMs = Date.now(), ctx = {}) {
+  const p = providerFor(site.isp);
+  const legacy = !p && providerKey(site.isp);
+  if (!p && !legacy) {
+    if (!site.isp && !site.monitorHost) return null;
   }
-  hits.sort((a, b) => Number(b.internet) - Number(a.internet) || (a.match === 'area' ? 0 : 1) - (b.match === 'area' ? 0 : 1) || (a.kind === 'outage' ? 0 : 1) - (b.kind === 'outage' ? 0 : 1));
-  // Only notices that affect Internet raise the client; phone/TV/mobile-only
-  // notices at the address are shown, not alerted.
-  const net = hits.filter((x) => x.internet && x.match === 'area');
-  let state = 'clear';
-  if (net.some((x) => x.kind === 'outage')) state = 'out';
-  else if (net.some((x) => x.kind === 'planned' && (!x.startMs || x.startMs <= nowMs))) state = 'out';
-  else if (net.some((x) => x.kind === 'planned')) state = 'planned';
-  else if (hits.length) state = 'nearby';
-  if (h?.status === 'down') state = 'unknown';
-  return { provider: key, name: page.name, supported: true, state, notices: hits.slice(0, 4), link: page.page, checkedAt: h?.lastSuccessAt || null, error: h?.error || null };
+  const key = p?.key || legacy || null;
+  const name = p?.name || PROVIDER_PAGES[legacy]?.name || site.isp || 'Internet';
+  const link = p?.page ?? PROVIDER_PAGES[legacy]?.page ?? null;
+  const checks = [];
+  const hits = [];
+  let out = false;
+  let planned = false;
+  let nearby = false;
+
+  // 1. The provider's own outage map or notices.
+  const feedKey = p?.feed || (legacy && !PROVIDER_PAGES[legacy]?.manual ? legacy : null);
+  if (feedKey) {
+    const h = health[feedKey];
+    const own = notices.filter((n) => n.provider === feedKey).map((n) => [n, matchNotice(n, site)]).filter(([, m]) => m).map(([n, m]) => hitOf(n, m));
+    hits.push(...own);
+    const net = own.filter((x) => x.internet && x.match === 'area');
+    let state = 'clear';
+    if (net.some((x) => x.kind === 'outage' || !x.startMs || x.startMs <= nowMs)) state = 'out';
+    else if (net.length) state = 'planned';
+    else if (own.length) state = 'nearby';
+    if (h?.status === 'down') state = 'unknown';
+    out ||= state === 'out';
+    planned ||= state === 'planned';
+    nearby ||= state === 'nearby';
+    const first = own[0];
+    checks.push({
+      id: 'feed', label: `${LABEL[feedKey] || name} outage map`, state, link: PROVIDER_PAGES[feedKey]?.page || link,
+      text: state === 'unknown' ? `Could not be read${h?.error ? ` (${h.error})` : ''}` : first ? `${first.title}${first.services?.length ? ` · ${first.services.join(', ')}` : ''}` : 'Nothing reported here',
+      checkedAt: h?.lastSuccessAt || null,
+    });
+  }
+
+  // 2. The provider's own per-address lookup (Eastlink).
+  if (p?.address) {
+    const c = ctx.siteCheck;
+    const state = !c ? 'pending' : c.error ? 'unknown' : c.state;
+    if (state === 'out') out = true;
+    checks.push({
+      id: 'address', label: `${name} address lookup`, state, link,
+      text: !c ? 'Checking this address…' : c.error ? `Could not check (${c.error})` : c.state === 'out'
+        ? `Outage at ${c.matched}${c.restoreAt ? `, estimated back ${new Date(c.restoreAt).toLocaleString('en-CA', { timeZone: 'America/Edmonton', weekday: 'short', hour: 'numeric', minute: '2-digit' })}` : ''}`
+        : c.matched ? `No outage at ${c.matched}` : 'Address not found by Eastlink; set the full street address',
+      checkedAt: c?.checkedAt || null,
+    });
+  }
+
+  // 3. Resellers: outages on the Telus or Shaw line they ride.
+  for (const via of p?.rides || []) {
+    if (site.ispNetwork && site.ispNetwork !== via) continue;
+    const h = health[via];
+    const own = notices.filter((n) => n.provider === via).map((n) => [n, matchNotice(n, site)]).filter(([, m]) => m).map(([n, m]) => hitOf(n, m, via));
+    hits.push(...own);
+    const here = own.filter((x) => x.internet && x.match === 'area' && (x.kind === 'outage' || !x.startMs || x.startMs <= nowMs));
+    const sure = site.ispNetwork === via;
+    let state = h?.status === 'down' ? 'unknown' : here.length ? (sure ? 'out' : 'possible') : own.length ? 'nearby' : 'clear';
+    if (state === 'out') out = true;
+    if (state === 'possible' || state === 'nearby') nearby = true;
+    checks.push({
+      id: `rides-${via}`, label: `${LABEL[via]} line${sure ? '' : ' (if it rides this one)'}`, state, link: PROVIDER_PAGES[via]?.page,
+      text: here.length ? `${LABEL[via]} reports ${here[0].title}${sure ? '' : '. Set which line this client uses to be sure.'}` : own.length ? `${LABEL[via]}: ${own[0].title}` : `No ${LABEL[via]} outage here`,
+      checkedAt: h?.lastSuccessAt || null,
+    });
+  }
+
+  // 4. Alberta Emergency Alert telecom alerts covering the site.
+  const aeaHealth = health.aea;
+  if (aeaHealth && (ctx.province === 'AB' || notices.some((n) => n.provider === 'aea'))) {
+    const alerts = notices.filter((n) => n.provider === 'aea' && n.polygons?.length && pointInPolygons(site, n.polygons));
+    for (const a of alerts) hits.push(hitOf(a, 'area'));
+    const forUs = alerts.filter((a) => a.internet || !a.mentions?.length || a.mentions.includes(key) || (p?.rides || []).some((r) => a.mentions.includes(r)));
+    const state = aeaHealth.status === 'down' ? 'unknown' : forUs.some((a) => a.internet && (!a.mentions.length || a.mentions.includes(key))) ? 'out' : alerts.length ? 'nearby' : 'clear';
+    if (state === 'out') out = true;
+    if (state === 'nearby') nearby = true;
+    if (ctx.province === 'AB' || alerts.length)
+      checks.push({
+        id: 'aea', label: 'Alberta Emergency Alert', state, link: alerts[0]?.link || AEA_PAGE,
+        text: alerts.length ? `${alerts[0].title}${alerts[0].mentions?.length ? ` (${alerts[0].mentions.map((m) => LABEL[m] || providerByKey(m)?.name || m).join(', ')})` : ''}` : 'No telecom alert here',
+        checkedAt: aeaHealth.lastSuccessAt || null,
+      });
+  }
+
+  // 5. The provider's own network, as IODA sees it.
+  if (p?.asns?.length && ctx.networks) {
+    const nets = p.asns.map((a) => ctx.networks[a]).filter(Boolean);
+    const active = nets.filter((n) => n.active);
+    const state = ctx.networkStatus === 'down' ? 'unknown' : active.length ? 'degraded' : 'clear';
+    checks.push({
+      id: 'network', label: `${name} network`, state, link: 'https://ioda.inetintel.cc.gatech.edu/',
+      text: active.length
+        ? `Drop since ${new Date(Math.min(...active.map((n) => n.since))).toLocaleString('en-CA', { timeZone: 'America/Edmonton', hour: 'numeric', minute: '2-digit', weekday: 'short' })} (${[...new Set(active.flatMap((n) => n.signals))].join(', ')})${p.key === 'starlink' ? ', Starlink-wide' : ''}`
+        : `Normal (AS${p.asns.join(', AS')})`,
+      checkedAt: null,
+    });
+  }
+
+  // 6. The client's own connection.
+  if (site.monitorHost) {
+    const w = ctx.wan;
+    const state = !w ? 'pending' : w.state === 'up' ? 'clear' : w.state === 'down' ? 'out' : w.state === 'invalid' ? 'unknown' : 'pending';
+    if (state === 'out') out = true;
+    checks.push({
+      id: 'wan', label: `Connection check (${site.monitorHost})`, state, link: null,
+      text: !w ? 'First check pending' : w.state === 'up' ? `Answering${w.rttMs != null ? `, ${w.rttMs} ms` : ''} (${w.method})` : w.state === 'down' ? `No answer since ${new Date(w.since).toLocaleTimeString('en-CA', { timeZone: 'America/Edmonton', hour: 'numeric', minute: '2-digit' })}` : w.state === 'invalid' ? w.error : 'Checking…',
+      checkedAt: w?.lastCheckAt || null,
+    });
+  }
+
+  hits.sort((a, b) => rank(a) - rank(b) || (a.kind === 'outage' ? 0 : 1) - (b.kind === 'outage' ? 0 : 1));
+  const readable = checks.filter((c) => !['unknown', 'pending'].includes(c.state));
+  const wanUp = ctx.wan?.state === 'up';
+  let state = out ? 'out' : planned ? 'planned' : nearby ? 'nearby' : readable.length ? 'clear' : 'unknown';
+  // The client's own line answering beats a map saying the area is out.
+  if (state === 'out' && wanUp && !checks.some((c) => c.id === 'wan' && c.state === 'out')) state = 'nearby';
+  const degraded = checks.some((c) => c.state === 'degraded');
+  return {
+    provider: key,
+    name,
+    kind: p?.kind || null,
+    supported: checks.some((c) => c.id !== 'network' || p?.kind === 'regional'),
+    state,
+    networkDrop: degraded,
+    checks,
+    notices: hits.slice(0, 5),
+    link,
+    about: p?.about || PROVIDER_PAGES[legacy]?.manual || null,
+    note: p?.about || PROVIDER_PAGES[legacy]?.manual || null,
+    checkedAt: checks.map((c) => c.checkedAt).filter(Boolean).sort().at(-1) || null,
+  };
 }
 
 // --------------------------------------------------------------- poller ----
 
+const FEEDS = ['telus', 'rogers', 'teksavvy', 'sasktel', 'aea'];
+const EASTLINK = 'https://help.eastlink.ca/api/gis';
+const PROVIDERS_EASTLINK_PAGE = 'https://help.eastlink.ca/managing-your-account-billing/service-outage/';
+
+/** A street address as Eastlink's lookup wants it: "4802 50 Ave Camrose". */
+export function eastlinkQuery(address) {
+  const a = parseAddress(address);
+  if (!a.street) return null;
+  return [a.street, a.city].filter(Boolean).join(' ');
+}
+
+/** Eastlink checkOutage answer → {state, restoreAt, nodes}. */
+export function readEastlinkOutage(json) {
+  if (!json || typeof json.statusCode !== 'number') throw new Error('Unexpected Eastlink answer');
+  const nodes = Array.isArray(json.outageNodes) ? json.outageNodes : [];
+  const restore = nodes.map((n) => Date.parse(n.estimatedRestoreTime)).filter(Number.isFinite);
+  return {
+    state: json.statusCode === 1 || nodes.length ? 'out' : json.statusCode === 0 ? 'clear' : 'unknown',
+    restoreAt: restore.length ? Math.max(...restore) : null,
+    nodes: nodes.length,
+  };
+}
+
 export function createIspStatus({ request, requestText, geocoder, now = () => Date.now(), log = console, provincesFor = () => PROVINCES }) {
   /** key → {notices, lastSuccessAt, lastAttemptAt, error} */
   const state = {};
+  /** siteId → per-address check result (Eastlink) */
+  const siteChecks = new Map();
   const areaPointCache = new Map();
   let running = null;
 
@@ -449,6 +604,7 @@ export function createIspStatus({ request, requestText, geocoder, now = () => Da
       if (!n) throw new Error('Unexpected TekSavvy map');
       return n;
     }
+    if (key === 'aea') return loadAeaNotices({ requestText, nowMs, log });
     if (key === 'sasktel') {
       const n = parseSaskTel(await requestText(PROVIDER_PAGES.sasktel.page, { headers: { Accept: 'text/html' } }));
       if (!n) throw new Error('Unexpected SaskTel page');
@@ -484,7 +640,7 @@ export function createIspStatus({ request, requestText, geocoder, now = () => Da
 
   async function refresh() {
     running ??= (async () => {
-      for (const key of ['telus', 'rogers', 'teksavvy', 'sasktel']) {
+      for (const key of FEEDS) {
         const prior = state[key];
         if (prior && now() - prior.lastAttemptAt < TTL_MS) continue;
         const attemptAt = now();
@@ -504,7 +660,7 @@ export function createIspStatus({ request, requestText, geocoder, now = () => Da
 
   function health() {
     const out = {};
-    for (const key of ['telus', 'rogers', 'teksavvy', 'sasktel']) {
+    for (const key of FEEDS) {
       const s = state[key];
       const fresh = s?.lastSuccessAt && now() - s.lastSuccessAt < STALE_DROP_MS;
       out[key] = {
@@ -520,10 +676,50 @@ export function createIspStatus({ request, requestText, geocoder, now = () => Da
     return out;
   }
 
+  /** Per-address lookups for clients whose provider offers one (Eastlink). */
+  async function refreshSites(sites) {
+    for (const site of sites) {
+      const p = providerFor(site.isp);
+      if (p?.address !== 'eastlink') {
+        siteChecks.delete(site.id);
+        continue;
+      }
+      const prior = siteChecks.get(site.id);
+      if (prior && prior.address === site.address && now() - prior.attemptAt < TTL_MS) continue;
+      const attemptAt = now();
+      const base = { address: site.address, attemptAt };
+      try {
+        const q = eastlinkQuery(site.address || '');
+        if (!q) {
+          siteChecks.set(site.id, { ...base, checkedAt: now(), matched: null, state: 'unknown', error: 'no street address saved' });
+          continue;
+        }
+        const list = await request(`${EASTLINK}/mobile/suggestaddress/${encodeURIComponent(q)}`, { headers: { Referer: PROVIDERS_EASTLINK_PAGE } });
+        const pick = Array.isArray(list) ? list[0] : null;
+        if (!pick?.address) {
+          siteChecks.set(site.id, { ...base, checkedAt: now(), matched: null, state: 'unknown', error: null });
+          continue;
+        }
+        const r = readEastlinkOutage(await request(`${EASTLINK}/checkOutage/${encodeURIComponent(pick.address)}`, { headers: { Referer: PROVIDERS_EASTLINK_PAGE } }));
+        siteChecks.set(site.id, { ...base, ...r, matched: pick.address, checkedAt: now(), error: null });
+      } catch (error) {
+        siteChecks.set(site.id, { ...(prior || {}), ...base, error: String(error?.message || error).slice(0, 120) });
+        log.warn?.(`[isp-status] eastlink ${site.name}: ${error?.message}`);
+      }
+    }
+  }
+
   function notices() {
     const h = health();
     return Object.entries(state).flatMap(([key, s]) => (h[key].status === 'down' ? [] : s.notices || []));
   }
 
-  return { refresh, notices, health, statusFor: (site) => ispStatusFor(site, notices(), health(), now()) };
+  return {
+    refresh,
+    refreshSites,
+    notices,
+    health,
+    siteCheck: (id) => siteChecks.get(id) || null,
+    statusFor: (site, ctx = {}) => ispStatusFor(site, notices(), health(), now(), { ...ctx, siteCheck: siteChecks.get(site.id) || null }),
+  };
 }

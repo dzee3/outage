@@ -17,6 +17,8 @@ import path from 'node:path';
  * Back up that folder and you have backed up the dashboard.
  */
 
+import { parseTarget } from './wan.js';
+
 const HISTORY_KEEP_MS = 7 * 24 * 3600_000;
 const EVENTS_KEEP = 2000;
 
@@ -63,6 +65,16 @@ export function validateSite(input, existing = {}) {
   // City and neighbourhood, used to match ISP notices that name places.
   if ('city' in input) site.city = clean(input.city, 80);
   if ('area' in input) site.area = clean(input.area, 80);
+  // Optional: the client's public IP or host name, pinged by the server.
+  if ('monitorHost' in input) {
+    site.monitorHost = clean(input.monitorHost, 120);
+    if (site.monitorHost && !parseTarget(site.monitorHost))
+      throw new Error('Connection check needs an IP address or host name (optionally :port).');
+  }
+  // For resellers: which line the client is on ("telus" or "rogers").
+  if ('ispNetwork' in input) {
+    site.ispNetwork = ['telus', 'rogers'].includes(input.ispNetwork) ? input.ispNetwork : '';
+  }
   // Set once the address has been re-checked against the geocoders.
   if ('geoChecked' in input) site.geoChecked = Boolean(input.geoChecked);
   if ('radiusKm' in input && input.radiusKm !== '' && input.radiusKm != null) {
@@ -71,7 +83,7 @@ export function validateSite(input, existing = {}) {
       throw new Error('Alert radius must be between 0.2 and 50 km.');
     site.radiusKm = r;
   }
-  for (const key of ['address', 'notes', 'utility', 'isp', 'city', 'area']) if (site[key] === '') delete site[key];
+  for (const key of ['address', 'notes', 'utility', 'isp', 'city', 'area', 'monitorHost', 'ispNetwork']) if (site[key] === '') delete site[key];
   site.lat = Math.round(site.lat * 1e6) / 1e6;
   site.lon = Math.round(site.lon * 1e6) / 1e6;
   return site;
@@ -117,6 +129,8 @@ const HEADER_ALIASES = {
   radiusKm: ['radius_km', 'radius', 'radius km', 'alert radius'],
   utility: ['utility', 'power', 'power utility', 'utility_id'],
   isp: ['isp', 'internet', 'internet provider', 'provider'],
+  ispNetwork: ['isp_network', 'line', 'isp line'],
+  monitorHost: ['monitor_host', 'wan_ip', 'wan ip', 'public ip', 'ip'],
 };
 
 /** CSV text → {sites, errors}. Needs a header row with name, lat, lon. */
@@ -152,9 +166,9 @@ export function sitesToCsv(sites) {
     const s = v == null ? '' : String(v);
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const lines = ['name,lat,lon,address,notes,radius_km,utility,isp'];
+  const lines = ['name,lat,lon,address,notes,radius_km,utility,isp,isp_network,monitor_host'];
   for (const s of sites)
-    lines.push([s.name, s.lat, s.lon, s.address, s.notes, s.radiusKm, s.utility, s.isp].map(q).join(','));
+    lines.push([s.name, s.lat, s.lon, s.address, s.notes, s.radiusKm, s.utility, s.isp, s.ispNetwork, s.monitorHost].map(q).join(','));
   return `${lines.join('\n')}\n`;
 }
 

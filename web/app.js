@@ -104,7 +104,7 @@ const THEMES = {
     map: {
       bg: '#070d12', water: '#04121b', boundary: '#2a4656', label: '#7f97a6', dim: '#020406', dimOpacity: 0.55,
       provOn: '#3e7f8f', provOff: '#1d2c38', halo: '#05080b', stroke: '#05080b', selected: '#ffffff',
-      phone: '#8f86b8', planned: '#ffb02e', diamond: '#071017', siteText: '#cfeef5', glow: 1,
+      phone: '#8f86b8', planned: '#ffb02e', alert: '#ff6b3d', diamond: '#071017', siteText: '#cfeef5', glow: 1,
     },
   },
   light: {
@@ -114,7 +114,7 @@ const THEMES = {
     map: {
       bg: '#eef1f4', water: '#d6e2ec', boundary: '#b9c3cc', label: '#5d6873', dim: '#eef1f4', dimOpacity: 0.7,
       provOn: '#8a949e', provOff: '#d3d9df', halo: '#ffffff', stroke: '#ffffff', selected: '#14202b',
-      phone: '#a39cc7', planned: '#f0b429', diamond: '#ffffff', siteText: '#14202b', glow: 0,
+      phone: '#a39cc7', planned: '#f0b429', alert: '#d9480f', diamond: '#ffffff', siteText: '#14202b', glow: 0,
     },
   },
 };
@@ -375,21 +375,21 @@ map.on('style.load', () => {
     type: 'fill',
     source: 'isp-notices',
     filter: ['==', ['geometry-type'], 'Polygon'],
-    paint: { 'fill-color': ['case', ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone], 'fill-opacity': ['case', ['get', 'internet'], 0.32, 0.2] },
+    paint: { 'fill-color': ['case', ['get', 'aea'], t.alert, ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone], 'fill-opacity': ['case', ['get', 'internet'], 0.32, 0.2] },
   });
   map.addLayer({
     id: 'ispn-line',
     type: 'line',
     source: 'isp-notices',
     filter: ['==', ['geometry-type'], 'Polygon'],
-    paint: { 'line-color': ['case', ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone], 'line-width': 1.4, 'line-opacity': 0.9 },
+    paint: { 'line-color': ['case', ['get', 'aea'], t.alert, ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone], 'line-width': 1.4, 'line-opacity': 0.9 },
   });
   map.addLayer({
     id: 'ispn-glow',
     type: 'circle',
     source: 'isp-notices',
     filter: ['==', ['geometry-type'], 'Point'],
-    paint: { 'circle-radius': 16, 'circle-color': ['case', ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone], 'circle-opacity': 0.22, 'circle-blur': 0.8 },
+    paint: { 'circle-radius': 16, 'circle-color': ['case', ['get', 'aea'], t.alert, ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone], 'circle-opacity': 0.22, 'circle-blur': 0.8 },
   });
   map.addLayer({
     id: 'ispn-point',
@@ -399,7 +399,7 @@ map.on('style.load', () => {
     paint: {
       'circle-radius': 6,
       'circle-color': t.diamond,
-      'circle-stroke-color': ['case', ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone],
+      'circle-stroke-color': ['case', ['get', 'aea'], t.alert, ['==', ['get', 'kind'], 'planned'], t.planned, ['get', 'internet'], COLORS.internet, t.phone],
       'circle-stroke-width': 2.5,
     },
   });
@@ -562,7 +562,10 @@ function siteDetail(s) {
   const first = s.impact.outages[0];
   if (s.impact.status === 'out') return 'NO POWER';
   if (s.impact.status === 'near' && first) return `outage ${first.distanceKm} km`;
-  if (s.impact.status === 'internet') return s.impact.isp?.state === 'out' ? `${s.impact.isp.name} outage` : s.impact.network ? `${s.impact.network.name} network drop` : 'internet drop';
+  if (s.impact.status === 'internet') {
+    if (s.impact.isp?.checks?.some((c) => c.id === 'wan' && c.state === 'out')) return 'NO CONNECTION';
+    return s.impact.isp?.state === 'out' ? `${s.impact.isp.name} outage` : s.impact.network ? `${s.impact.network.name} network drop` : 'internet drop';
+  }
   if (s.impact.isp?.state === 'planned') return `${s.impact.isp.name} maintenance`;
   if (s.impact.status === 'planned' && first) return `planned work ${first.distanceKm} km`;
   return '';
@@ -580,7 +583,7 @@ function circlePolygon(c, steps = 48) {
   return { type: 'Polygon', coordinates: [ring] };
 }
 
-const ISP_NAMES = { telus: 'Telus', rogers: 'Rogers / Shaw', teksavvy: 'TekSavvy', sasktel: 'SaskTel' };
+const ISP_NAMES = { telus: 'Telus', rogers: 'Rogers / Shaw', teksavvy: 'TekSavvy', sasktel: 'SaskTel', aea: 'Alberta Emergency Alert' };
 /** Provider notices that pass the current filter. */
 function visibleIspNotices(f) {
   return (state.snap?.ispNotices || []).filter((n) => passesFilter(ispKind(n), n.startMs, n.province, f));
@@ -604,7 +607,7 @@ function renderMap() {
   map.getSource('areas').setData({ type: 'FeatureCollection', features: areas });
   const ispFeatures = [];
   for (const n of visibleIspNotices()) {
-    const props = { id: n.id, kind: n.kind, internet: n.internet !== false };
+    const props = { id: n.id, kind: n.kind, internet: n.internet !== false, aea: n.provider === 'aea' };
     for (const c of n.circles || []) ispFeatures.push({ type: 'Feature', properties: props, geometry: circlePolygon(c) });
     if (n.circles?.length) continue;
     for (const [lat, lon, w, hgt] of n.cells || [])
@@ -763,15 +766,19 @@ function outagePopup(r) {
 
 const ISP_STATE_TEXT = {
   out: 'outage reported at this address',
+  possible: 'outage on a line it may use',
   planned: 'planned maintenance here',
   nearby: 'notice elsewhere in the same town',
   clear: 'no outage reported',
   unknown: 'outage page not reachable right now',
 };
 function ispNoticePopup(n) {
-  const provider = { telus: 'Telus', rogers: 'Rogers / Shaw', teksavvy: 'TekSavvy', sasktel: 'SaskTel' }[n.provider] || n.provider;
+  const provider = ISP_NAMES[n.provider] || n.provider;
   const rows = [
     ['Services', (n.services || []).join(', ')],
+    ['Area', n.area],
+    ['Carrier named', n.mentions?.length ? n.mentions.map((m) => ISP_NAMES[m] || m).join(', ') : null],
+    ['Issued by', n.sender],
     ['Details', n.detail],
     [n.kind === 'planned' ? 'Starts' : 'Since', n.startMs ? new Date(n.startMs).toLocaleString('en-CA', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null],
     ['Ends', n.endMs ? new Date(n.endMs).toLocaleString('en-CA', { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null],
@@ -780,28 +787,48 @@ function ispNoticePopup(n) {
     h('div', {
       class: 'pop-kind',
       style: `color:${n.kind === 'planned' ? 'var(--planned-text)' : n.internet === false ? 'var(--muted)' : 'var(--internet-text)'}`,
-      text: `${n.internet === false ? 'Provider (not Internet)' : 'Internet'}: ${n.kind === 'planned' ? 'planned maintenance' : 'outage notice'}`,
+      text: n.provider === 'aea' ? 'Alberta Emergency Alert: telecom outage' : `${n.internet === false ? 'Provider (not Internet)' : 'Internet'}: ${n.kind === 'planned' ? 'planned maintenance' : 'outage notice'}`,
     }),
     h('h4', { text: `${provider} · ${n.title}` }),
     h('dl', {}, rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])),
-    n.link ? h('div', { class: 'pop-actions' }, h('a', { class: 'btn', href: n.link, target: '_blank', rel: 'noopener', text: `Open ${provider}'s outage page` })) : null,
+    n.link ? h('div', { class: 'pop-actions' }, h('a', { class: 'btn', href: n.link, target: '_blank', rel: 'noopener', text: n.provider === 'aea' ? 'Open the alert' : `Open ${provider}'s outage page` })) : null,
   );
 }
-/** One line about a site's internet provider, from its outage page. */
+/** One line about a site's internet: the strongest signal. */
 function ispLine(isp) {
   if (!isp) return null;
-  if (!isp.provider) return { state: 'manual', text: 'No public outage page is known for this provider.' };
-  if (!isp.supported) return { state: 'manual', text: `${isp.name}: ${isp.note}`, link: isp.link };
-  const top = isp.notices?.[0];
-  let text = `${isp.name}: ${ISP_STATE_TEXT[isp.state] || isp.state}`;
-  if (top) text += `, "${top.title}"${top.detail ? ` (${top.detail})` : ''}`;
-  else if (isp.state === 'clear') text += isp.checkedAt ? ` (checked ${ago(isp.checkedAt)})` : '';
-  return { state: isp.state, text, link: top?.link || isp.link };
+  const bad = isp.checks?.find((c) => c.state === 'out') || isp.checks?.find((c) => ['possible', 'degraded', 'nearby', 'planned'].includes(c.state));
+  if (bad) return { state: isp.state, text: `${bad.label}: ${bad.text}`, link: bad.link || isp.link };
+  if (!isp.checks?.length) return { state: 'manual', text: isp.about || 'No public outage information is known for this provider.', link: isp.link };
+  const ok = isp.checks.filter((c) => c.state === 'clear').map((c) => c.label.replace(/ \(.*\)$/, ''));
+  return { state: isp.state, text: ok.length ? `${isp.name}: clear on ${ok.join(', ')}` : `${isp.name}: ${ISP_STATE_TEXT[isp.state] || isp.state}`, link: isp.link };
 }
-function ispLineEl(isp) {
-  const l = ispLine(isp);
-  if (!l) return null;
-  return h('p', { class: 'isp-line', dataset: { state: l.state } }, l.text, l.link ? h('span', {}, ' ', h('a', { href: l.link, target: '_blank', rel: 'noopener', text: 'outage page' })) : null);
+
+const CHECK_STATE = {
+  out: 'Outage', possible: 'Possible', degraded: 'Network drop', planned: 'Planned', nearby: 'Nearby',
+  clear: 'Clear', unknown: 'No data', pending: 'Checking',
+};
+/** Every internet signal for one client, one row each. */
+function ispChecksEl(isp, { compact = false } = {}) {
+  if (!isp) return null;
+  const rows = (isp.checks || []).map((c) =>
+    h('li', { dataset: { state: c.state } },
+      h('i', { class: 'dot', 'aria-hidden': 'true' }),
+      h('span', { class: 'ck-main' },
+        h('b', { text: c.label }),
+        h('span', { class: 'ck-text', text: c.text }),
+      ),
+      h('span', { class: 'ck-side' },
+        h('em', { text: CHECK_STATE[c.state] || c.state }),
+        c.checkedAt ? h('small', { text: ago(c.checkedAt) }) : null,
+        c.link ? h('a', { href: c.link, target: '_blank', rel: 'noopener', text: 'open' }) : null,
+      ),
+    ),
+  );
+  return h('div', { class: `isp-checks${compact ? ' compact' : ''}`, dataset: { state: isp.state } },
+    rows.length ? h('ul', {}, rows) : null,
+    (!rows.length || (isp.kind && isp.checks.every((c) => c.id === 'network'))) && isp.about ? h('p', { class: 'ck-about', text: isp.about }) : null,
+  );
 }
 
 function sitePopup(s) {
@@ -822,11 +849,10 @@ function sitePopup(s) {
     s.address ? h('div', { class: 'item-meta', text: s.address }) : null,
     h('dl', { style: 'margin-top:8px' },
       h('dt', { text: 'Power' }), h('dd', { text: u ? `${u.name}${u.monitored ? '' : ' (not monitored)'}` : 'unknown' }),
-      h('dt', { text: 'Internet' }), h('dd', { text: s.isp || 'not set' }),
+      h('dt', { text: 'Internet' }), h('dd', { text: s.isp ? `${s.isp}${s.ispNetwork ? ` on the ${s.ispNetwork === 'telus' ? 'Telus' : 'Shaw'} line` : ''}` : 'not set' }),
     ),
     hits.length ? h('ul', {}, hits) : null,
-    ispLineEl(impact.isp),
-    impact.network ? h('p', { style: 'color:var(--internet-text)', text: `${impact.network.name}'s network shows a drop since ${LOCAL.format(new Date(impact.network.since))} (IODA ${impact.network.signals.join(', ')}). National network signal, may not be this site.` }) : null,
+    ispChecksEl(impact.isp),
     internet ? h('p', { style: 'color:var(--internet-text)', text: `Internet connectivity across ${PROVINCE_NAMES[impact.province]} dropped ${ago(internet.since)} (IODA). Province-wide, not site-specific.` }) : null,
     impact.status === 'no-coverage' ? h('p', { style: 'color:var(--muted)', text: u && !u.monitored ? `${u.name} publishes no live outage map, so this site cannot be checked automatically.` : `Power outages aren't monitored in ${PROVINCE_NAMES[impact.province] || 'this area'}.` }) : null,
     s.notes ? h('p', { text: s.notes }) : null,
@@ -917,7 +943,7 @@ function stampUpdated() {
 
 // --------------------------------------------------------------- panels --
 
-const PANEL_TITLES = { outages: 'Outages', clients: 'Client sites', layers: 'Layers', sources: 'Sources', history: 'Last 24 hours' };
+const PANEL_TITLES = { outages: 'Outages', clients: 'Client sites', internet: 'Alberta internet', layers: 'Layers', sources: 'Sources', history: 'Last 24 hours' };
 function openPanel(name) {
   if (state.panel === name) name = null;
   state.panel = name;
@@ -971,12 +997,14 @@ function ispItem(n) {
 }
 
 function selectIspNotice(n) {
-  const cs = n.circles?.length ? n.circles : n.point ? [{ ...n.point, km: 2 }] : [];
-  if (!cs.length) return;
   const b = new maplibregl.LngLatBounds();
+  if (n.polygons?.length) for (const rings of n.polygons) for (const [x, y] of rings[0]) b.extend([x, y]);
+  const cs = n.circles?.length ? n.circles : n.point && !n.polygons?.length ? [{ ...n.point, km: 2 }] : [];
   for (const c of cs) for (const [x, y] of circlePolygon(c, 12).coordinates[0]) b.extend([x, y]);
+  if (b.isEmpty()) return;
   map.fitBounds(b, { padding: 140, maxZoom: 13, duration: 900 });
-  openPopup([cs[0].lon, cs[0].lat], ispNoticePopup(n));
+  const at = n.point || cs[0] || { lon: b.getCenter().lng, lat: b.getCenter().lat };
+  openPopup([at.lon, at.lat], ispNoticePopup(n));
 }
 
 function powerItem(r) {
@@ -1035,7 +1063,7 @@ function renderOutageList() {
 
 function setFilter(f) {
   state.filter = f;
-  for (const o of document.querySelectorAll('.segmented button')) o.setAttribute('aria-pressed', String(o.dataset.filter === f));
+  for (const o of document.querySelectorAll('#view-outages .segmented button')) o.setAttribute('aria-pressed', String(o.dataset.filter === f));
   renderOutageList();
   renderMap();
 }
@@ -1045,7 +1073,7 @@ function setFilter(f) {
 function siteMeta(s) {
   const first = s.impact.outages[0];
   const ispNow = s.impact.isp;
-  if (ispNow?.state === 'out' && !['out', 'near'].includes(s.impact.status)) return `${ispNow.name} reports an outage here: ${ispNow.notices[0]?.title || ''}`;
+  if (ispNow?.state === 'out' && !['out', 'near'].includes(s.impact.status)) return ispLine(ispNow)?.text || `${ispNow.name}: outage`;
   if (ispNow?.state === 'planned' && s.impact.status === 'planned' && !first) return `${ispNow.name} planned maintenance: ${ispNow.notices[0]?.title || ''}`;
   const u = s.impact.utility;
   if (first && s.impact.status !== 'planned') return first.relation === 'inside' ? `Inside a ${utilityName(first.utility)} outage` : `${first.distanceKm} km from a ${utilityName(first.utility)} outage`;
@@ -1459,6 +1487,8 @@ function openSitePanel(site = null) {
     form.elements.address.value = site.address || '';
     form.elements.notes.value = site.notes || '';
     form.elements.radiusKm.value = site.radiusKm || '';
+    form.elements.ispNetwork.value = site.ispNetwork || '';
+    form.elements.monitorHost.value = site.monitorHost || '';
     placeDraft(site.lat, site.lon, null, site);
   } else {
     form.hidden = true;
@@ -1578,10 +1608,18 @@ function renderLookup(info, site, place = null) {
   const providers = info.internet?.providers || [];
   const retail = providers.filter((x) => x.retail);
   for (const x of retail) isp.append(h('option', { value: x.name, text: `${x.name} · ${x.techs.filter((t) => !/transport/i.test(t)).join(', ')}${x.ioda ? ' · network watched' : ''}` }));
+  // Starlink and other providers the broadband map leaves out.
+  const listed = new Set(retail.map((x) => x.name.toLowerCase()));
+  const extra = (state.snap?.ispBoard || [])
+    .filter((r) => r.key === 'starlink' || info.province === 'AB')
+    .filter((r) => !listed.has(r.name.toLowerCase()) && !(r.key === 'rogers' && (listed.has('rogers') || listed.has('shaw'))))
+    .sort((a, b) => Number(b.key === 'starlink') - Number(a.key === 'starlink') || a.name.localeCompare(b.name));
+  if (extra.length)
+    isp.append(h('optgroup', { label: info.province === 'AB' ? 'Other providers in Alberta' : 'Other providers' }, extra.map((r) => h('option', { value: r.name, text: `${r.name} · ${KIND_LABEL[r.kind] || r.kind}` }))));
   isp.append(h('option', { value: '__other', text: 'Other…' }));
   const other = $('f-isp-other');
   if (site?.isp) {
-    if (retail.some((x) => x.name === site.isp)) isp.value = site.isp;
+    if ([...isp.options].some((o) => o.value === site.isp)) isp.value = site.isp;
     else {
       isp.value = '__other';
       other.value = site.isp;
@@ -1607,20 +1645,25 @@ async function checkIsp() {
   const box = $('isp-check');
   box.textContent = '';
   delete box.dataset.state;
-  if (!name || !f.lat.value) return;
+  if (!name || !f.lat.value) {
+    $('f-line-wrap').hidden = true;
+    return;
+  }
   const seq = ++ispCheckSeq;
   try {
-    const q = new URLSearchParams({ lat: f.lat.value, lon: f.lon.value, isp: name, city: f.city.value, area: f.area.value });
+    const q = new URLSearchParams({ lat: f.lat.value, lon: f.lon.value, isp: name, city: f.city.value, area: f.area.value, address: f.address.value, ispNetwork: f.ispNetwork.value });
     const { status } = await fetch(`/api/isp/check?${q}`).then((r) => r.json());
     if (seq !== ispCheckSeq) return;
-    const l = ispLine(status);
-    if (!l) return;
-    box.dataset.state = l.state;
-    box.append(h('b', { text: 'Outage check: ' }), l.text, l.link ? h('span', {}, ' ', h('a', { href: l.link, target: '_blank', rel: 'noopener', text: 'outage page' })) : null);
+    // Resellers: ask which line they ride.
+    $('f-line-wrap').hidden = !status?.checks?.some((c) => c.id.startsWith('rides-')) && !f.ispNetwork.value;
+    if (!status) return;
+    box.dataset.state = status.state;
+    box.append(h('b', { text: `Right now at this address (${status.name}):` }), ispChecksEl(status, { compact: true }));
   } catch {
     /* the site list will show it after saving */
   }
 }
+$('f-line').addEventListener('change', checkIsp);
 $('f-isp').addEventListener('change', (e) => {
   $('f-isp-other').hidden = e.target.value !== '__other';
   if (e.target.value === '__other') $('f-isp-other').focus();
@@ -1644,6 +1687,8 @@ $('site-form').addEventListener('submit', async (e) => {
     radiusKm: f.radiusKm.value,
     utility: f.utility.value,
     isp: ispPick === '__other' ? $('f-isp-other').value : ispPick,
+    ispNetwork: f.ispNetwork.value,
+    monitorHost: f.monitorHost.value.trim(),
     city: f.city.value,
     area: f.area.value,
   });
@@ -1712,9 +1757,116 @@ for (const box of document.querySelectorAll('[data-layer]')) {
   });
 }
 
+
+// ------------------------------------------------------- Alberta board --
+
+const BOARD_STATE = { outage: 'Outage', degraded: 'Network drop', planned: 'Planned work', unknown: 'No data', normal: 'Normal', 'no-data': 'No public data' };
+const KIND_LABEL = { carrier: 'Carrier', reseller: 'Reseller', satellite: 'Satellite', rural: 'Rural', regional: 'Regional' };
+state.boardView = local.get('boardView') === 'all' ? 'all' : 'mine';
+state.boardOpen = new Set();
+
+function boardFacts(r) {
+  const out = [];
+  if (r.signals.includes('feed')) {
+    const c = r.counts;
+    const parts = [];
+    if (c.internet) parts.push(`${c.internet} internet outage${c.internet === 1 ? '' : 's'}`);
+    if (c.other) parts.push(`${c.other} phone/TV only`);
+    if (c.planned) parts.push(`${c.planned} planned`);
+    out.push(parts.length ? parts.join(' · ') : 'Nothing reported in Alberta');
+    if (c.older) out.push(`${c.older} older than 7 days`);
+  }
+  if (r.signals.includes('address')) out.push('Each client address checked with the provider');
+  if (r.rides.length) out.push(`Rides ${r.rides.map((x) => ISP_NAMES[x]).join(' or ')} lines`);
+  if (r.counts.alerts) out.push(`${r.counts.alerts} Alberta Emergency Alert${r.counts.alerts === 1 ? '' : 's'} name it`);
+  if (r.network) out.push(r.network.active ? `Network drop since ${LOCAL.format(new Date(r.network.since))} (${r.network.signals.join(', ')})${r.key === 'starlink' ? ', Starlink-wide' : ''}` : r.network.watched ? 'Network normal' : 'Network not reported yet');
+  if (r.state === 'no-data') out.push('No public outage data: use the connection check');
+  return out;
+}
+
+function boardRow(r) {
+  const open = state.boardOpen.has(r.key);
+  const notices = (state.snap.ispNotices || [])
+    .filter((n) => n.provider === r.key && (!n.province || n.province === 'AB') && passesFilter(ispKind(n), n.startMs, n.province, 'now'))
+    .sort((a, b) => Number(b.internet !== false) - Number(a.internet !== false) || (b.startMs ?? 0) - (a.startMs ?? 0));
+  const clients = (state.snap.sites || []).filter((s) => s.impact?.isp?.provider === r.key);
+  const feed = r.feed;
+  return h('li', { class: `board-row${open ? ' open' : ''}`, dataset: { state: r.state } },
+    h('button', { type: 'button', class: 'board-head', 'aria-expanded': String(open), onclick: () => {
+      if (open) state.boardOpen.delete(r.key);
+      else state.boardOpen.add(r.key);
+      renderBoard();
+    } },
+      h('span', { class: 'b-name' }, r.name, h('span', { class: 'b-kind', text: KIND_LABEL[r.kind] || r.kind })),
+      h('span', { class: 'b-pill', dataset: { state: r.state }, text: BOARD_STATE[r.state] }),
+    ),
+    h('p', { class: 'b-facts', text: boardFacts(r).join(' · ') }),
+    r.clients.total
+      ? h('p', { class: 'b-clients' }, `${r.clients.total} client${r.clients.total === 1 ? '' : 's'}`, r.clients.affected ? h('b', { text: ` · ${r.clients.affected} affected: ${r.clients.names.join(', ')}` }) : ' · all clear')
+      : null,
+    open
+      ? h('div', { class: 'b-more' },
+          notices.length ? h('ul', { class: 'b-notices' }, notices.slice(0, 12).map((n) => h('li', {},
+            h('button', { type: 'button', dataset: { internet: String(n.internet !== false), kind: n.kind }, onclick: () => selectIspNotice(n) },
+              h('b', { text: n.title }),
+              h('small', { text: [(n.services || []).join(', '), n.kind === 'planned' ? 'planned' : n.startMs ? `out ${duration(n.startMs)}` : ''].filter(Boolean).join(' · ') }),
+            )))) : null,
+          clients.length ? h('ul', { class: 'b-sites' }, clients.map((s) => h('li', {},
+            h('button', { type: 'button', onclick: () => selectSite(s.id) },
+              h('span', { class: `status status-${s.impact.status}`, text: SITE_STATUS_TEXT[s.impact.status] }), ' ', s.name)))) : null,
+          h('p', { class: 'b-about', text: r.about || '' }),
+          h('p', { class: 'b-links' },
+            feed ? h('span', { text: `Outage map ${feed.status === 'ok' ? 'read' : feed.status === 'stale' ? 'stale' : 'unreachable'}${feed.checkedAt ? ` ${ago(feed.checkedAt)}` : ''}` }) : null,
+            r.page ? h('a', { href: r.page, target: '_blank', rel: 'noopener', text: `${r.name} outage page` }) : null,
+          ),
+        )
+      : null,
+  );
+}
+
+function renderBoard() {
+  const rows = state.snap?.ispBoard || [];
+  const mine = rows.filter((r) => r.clients.total > 0 || (['outage', 'degraded'].includes(r.state) && r.kind !== 'regional'));
+  const view = state.boardView === 'mine' && mine.length ? mine : rows;
+  for (const b of document.querySelectorAll('.board-filter button')) b.setAttribute('aria-pressed', String(b.dataset.board === state.boardView));
+  const bad = rows.filter((r) => r.state === 'outage');
+  const drops = rows.filter((r) => r.state === 'degraded');
+  const affected = (state.snap?.sites || []).filter((s) => s.impact?.status === 'internet' || s.impact?.isp?.state === 'out');
+  $('board-summary').textContent = rows.length
+    ? [
+        bad.length ? `${bad.length} provider${bad.length === 1 ? '' : 's'} reporting outages` : 'No provider reporting an internet outage',
+        drops.length ? `${drops.length} network drop${drops.length === 1 ? '' : 's'}` : null,
+        affected.length ? `${affected.length} client${affected.length === 1 ? '' : 's'} affected` : 'no clients affected',
+      ].filter(Boolean).join(' · ')
+    : 'Provider status is loading…';
+  // Alberta Emergency Alert telecom alerts, always on top.
+  const alerts = (state.snap?.ispNotices || []).filter((n) => n.provider === 'aea');
+  const box = $('board-alerts');
+  box.textContent = '';
+  for (const n of alerts)
+    box.append(h('button', { type: 'button', class: 'aea-card', onclick: () => selectIspNotice(n) },
+      h('b', { text: `Alberta Emergency Alert: ${n.title}` }),
+      h('span', { text: [n.area, n.mentions?.length ? `names ${n.mentions.map((m) => ISP_NAMES[m] || m).join(', ')}` : null, n.startMs ? `issued ${ago(n.startMs)}` : null].filter(Boolean).join(' · ') }),
+    ));
+  const list = $('isp-board');
+  list.textContent = '';
+  if (state.boardView === 'mine' && !mine.length && rows.length)
+    list.append(h('li', { class: 'empty' }, h('p', { text: 'None of your clients has an internet provider set yet, so every Alberta provider is listed. Set each client\'s provider to narrow this list.' })));
+  for (const r of view) list.append(boardRow(r));
+  const badge = $('c-internet');
+  const n = mine.filter((r) => r.state === 'outage' && r.clients.total).length;
+  badge.textContent = n ? String(n) : '';
+}
+for (const b of document.querySelectorAll('.board-filter button'))
+  b.addEventListener('click', () => {
+    state.boardView = b.dataset.board;
+    local.set('boardView', state.boardView);
+    renderBoard();
+  });
+
 // ---------------------------------------------------------- outage tools --
 
-for (const b of document.querySelectorAll('.segmented button')) b.addEventListener('click', () => setFilter(b.dataset.filter));
+for (const b of document.querySelectorAll('#view-outages .segmented button')) b.addEventListener('click', () => setFilter(b.dataset.filter));
 $('search').addEventListener('input', (e) => {
   state.search = e.target.value;
   renderOutageList();
@@ -1775,8 +1927,13 @@ async function refresh() {
     renderOutageList();
     renderSiteList();
     renderSources();
+    renderBoard();
     renderMap();
     checkAlerts();
+    if (popup && state.selectedSiteId) {
+      const site = state.snap.sites.find((x) => x.id === state.selectedSiteId);
+      if (site) popup.setDOMContent(sitePopup(site));
+    }
     if (popup && state.selectedId) {
       const r = state.snap.rows.find((x) => x.stableId === state.selectedId);
       if (r) popup.setDOMContent(outagePopup(r));

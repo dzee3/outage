@@ -102,7 +102,8 @@ test('provider names map to outage pages', () => {
   assert.equal(providerKey('Telus'), 'telus');
   assert.equal(providerKey('Bell MTS'), 'bell');
   assert.equal(providerKey('Paragon Internet'), null);
-  const bell = ispStatusFor({ isp: 'Bell', lat: 45, lon: -75 }, [], {});
-  assert.equal(bell.supported, false);
+  // Bell's own check is behind a CAPTCHA; in Alberta it rides Telus lines.
+  const bell = ispStatusFor({ isp: 'Bell', lat: 45, lon: -75 }, [], { telus: { status: 'ok' } });
   assert.match(bell.note, /CAPTCHA/);
+  assert.deepEqual(bell.checks.map((c) => c.id), ['rides-telus']);
 });

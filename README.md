@@ -33,24 +33,39 @@ Internet:
   Aliant, Rogers, Shaw, Telus, SaskTel, Eastlink, Cogeco, Xplore, TekSavvy,
   Distributel and Starlink. A client whose provider's network drops is flagged.
   These are national network signals, so they can't tell which town is affected.
-- **Provider outage pages, per client address:** each client's ISP is checked
-  against that provider's own public outage page every 5 minutes:
-  - **Telus:** national feed, every notice it publishes (Internet, TV, Home
-    Phone, 911, mobility), drawn as the affected area and matched by location.
-    Only notices that list Internet mark a client down; others show as nearby.
-  - **Rogers / Shaw:** per-province notices naming the city and
-    neighbourhoods, matched by name and by distance to the neighbourhood
-  - **TekSavvy:** its public outage map, matched by location
-  - **SaskTel:** its reported-outages list, matched by city
+- **Internet providers, Alberta first.** The **Internet** panel lists every
+  provider in Alberta (Telus, Rogers/Shaw, Eastlink, Bell, Freedom, TekSavvy,
+  Distributel, Starlink, Xplore, Northwestel, SaskTel and about 20 regional
+  providers such as MCSnet, AireNet, Syban, GPNetworks and O-NET) with what
+  each public signal says right now and which clients it touches. Each client
+  shows one row per signal, strongest first:
+  - **Provider outage map:** Telus's outage feed (exact areas; every service,
+    but only notices listing Internet mark a client down), the Rogers/Shaw
+    outage page (town and neighbourhood), TekSavvy's map, SaskTel's list.
+  - **Provider address lookup:** Eastlink's own per-address check, with its
+    estimated restore time.
+  - **The line a reseller rides:** Bell (on Telus fibre in Alberta), Freedom,
+    TekSavvy, Distributel and other resellers show outages on the Telus or
+    Shaw line at the address. Set **Line this provider uses** on the client to
+    turn "possible" into a firm answer.
+  - **Alberta Emergency Alert:** the province's telecom and 911 outage alerts,
+    with their exact polygons and the carrier they name.
+  - **The provider's network:** IODA (Georgia Tech) watches each provider's
+    own network (ASN) for BGP, active-probing and traffic drops. For a regional
+    provider that is effectively a regional signal; for Starlink (AS14593) it
+    is Starlink-wide.
+  - **Connection check (optional, per client):** this server pings the
+    client's public IP or host name every minute (ICMP, falling back to TCP
+    443/80, or a port you give). Two misses in a row mark the connection down.
+    It is the only exact signal for Starlink, Xplore and providers that
+    publish nothing, and when it answers it outranks a map saying the area is
+    out.
 
-  Bell checks addresses behind a CAPTCHA, which the dashboard does not get
-  around, and Eastlink, Cogeco and Xplore publish no public map. Clients with
-  those providers rely on the network signals instead.
-
-  Every provider notice appears on the map (violet for Internet, grey-violet
-  for phone/TV only, amber for planned work) and under **Outages → Internet**.
-  The "internet outages" count adds unplanned provider notices that affect
-  Internet to the IODA network drops.
+  Bell's own address check sits behind a CAPTCHA, which the dashboard does
+  not get around. Starlink, Xplore and the small regional providers publish
+  no outage map. Every provider notice and alert appears on the map (violet
+  for Internet, grey-violet for phone/TV only, amber for planned work,
+  orange-red for Alberta telecom alerts) and in **Outages**.
 - **Who serves a spot:** the federal [National Broadband Map](https://ised-isde.canada.ca/app/scr/sittibc/web/bbmap?lang=eng#!/map)
   (ISED), in ~25 km² hexagons.
 
@@ -96,7 +111,9 @@ or, where OpenStreetMap has it, the exact code. The dashboard then looks up:
 
 CSV import still works: a header row with `name`, `lat`, `lon`; optional
 `address`, `notes`, `radius_km`, `utility` (an id such as `enmax`,
-`hydroone`) and `isp`. **Export** downloads the current list.
+`hydroone`), `isp`, `isp_network` (`telus` or `rogers`, for resellers) and
+`monitor_host` (public IP or host for the connection check). **Export**
+downloads the current list.
 
 Each site gets one status:
 

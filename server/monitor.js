@@ -80,8 +80,10 @@ export function siteImpact(site, rows, { provinces, coverage, internet, utilityF
     const active = ispNet.asns.map((a) => internet?.networks?.[a]).filter((n) => n?.active);
     if (active.length) network = { name: ispNet.name, since: Math.min(...active.map((n) => n.since ?? Infinity)), signals: [...new Set(active.flatMap((n) => n.signals))] };
   }
-  // The provider's own outage page, matched to this address.
-  const isp = ispFor ? ispFor(site) : null;
+  // Every internet signal for this client's provider and address.
+  const isp = ispFor ? ispFor(site, { networks: internet?.networks || {}, networkStatus: internet?.status, province }) : null;
+  // The client's own line answering outranks a network-wide drop.
+  if (network && isp?.checks?.some((c) => c.id === 'wan' && c.state === 'clear')) network = null;
   const monitored = province && coverage[province] && (!utility || utility.monitored !== false);
   let status;
   if (live.some((h) => h.relation === 'inside')) status = 'out';

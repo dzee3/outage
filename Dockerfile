@@ -6,6 +6,11 @@ ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     DATA_DIR=/data
 
+# ping for the optional per-client connection check (falls back to TCP without it).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends iputils-ping \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --chown=node:node package.json ./
 COPY --chown=node:node server ./server

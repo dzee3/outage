@@ -34,7 +34,9 @@ test('broadband hexagon → providers merged and ranked', () => {
 });
 
 test('ISP names map to IODA networks', () => {
-  assert.deepEqual(asnsFor('Shaw').asns, [6327]);
+  assert.deepEqual(asnsFor('Shaw').asns, [6327, 812]); // Shaw is Rogers now
+  assert.deepEqual(asnsFor('Starlink').asns, [14593]);
+  assert.deepEqual(asnsFor('MCSnet').asns, [36817]);
   assert.deepEqual(asnsFor('Bell MTS').asns, [7122]);
   assert.deepEqual(asnsFor('bell').asns, [577]);
   assert.equal(asnsFor('Paragon Internet'), null);
