@@ -25,6 +25,18 @@ services:
       - INTERNET=on
       # 1 = replay sample data instead of polling the utilities.
       - DEMO=0
+      # Two-site setup (see "Two sites" in the README). Leave empty to run alone.
+      # This site's name, and whether it keeps (owner) or copies (mirror) the client list:
+      - INSTANCE_NAME=
+      - SITES=
+      # Shared secret, identical on both sites (openssl rand -hex 32):
+      - PEER_KEY=
+      # Office only: the home hostname and its Cloudflare Access service token.
+      - PEER_URL=
+      - PEER_ACCESS_ID=
+      - PEER_ACCESS_SECRET=
+      # Home only: the Cloudflare Tunnel token (starts cloudflared in the container).
+      - TUNNEL_TOKEN=
     volumes:
       # Client sites, history and the event log; survives rebuilds.
       - outage-data:/data

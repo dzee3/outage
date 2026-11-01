@@ -928,6 +928,14 @@ function renderTop() {
   $('feeds-dot').dataset.status = down.length ? 'down' : stale.length ? 'stale' : 'ok';
   $('feeds-text').textContent = `${live}/${s.sources.length} live`;
   $('btn-feeds').title = down.length ? `Down: ${down.map((x) => x.name).join(', ')}` : 'All utility feeds answering';
+  const pr = s.peer;
+  $('btn-peer').hidden = !pr?.configured;
+  if (pr?.configured) {
+    $('peer-dot').dataset.status = pr.connected ? 'ok' : 'down';
+    $('peer-text').textContent = pr.connected ? `⇄ ${pr.peerName || 'peer'}` : `${pr.peerName || 'Peer'} offline`;
+    const borrowed = [...s.sources, ...Object.values(s.ispSources || {}), s.internet].filter((x) => x?.via).length;
+    $('btn-peer').title = [pr.connected ? `Connected to ${pr.peerName}, last exchange ${ago(pr.lastSeenAt)}` : `Not connected${pr.lastSeenAt ? ` since ${ago(pr.lastSeenAt)}` : ''}${pr.lastError ? `: ${pr.lastError}` : ''}`, borrowed ? `${borrowed} source${borrowed === 1 ? '' : 's'} borrowed from it` : null, pr.pendingEdits ? `${pr.pendingEdits} client edit${pr.pendingEdits === 1 ? '' : 's'} waiting` : null].filter(Boolean).join(' · ');
+  }
   $('c-outages').textContent = String(unplannedNow + plannedNow + recentIsp.filter((x) => x.kind === 'outage' && x.internet !== false).length || '');
   $('c-clients').textContent = t.sitesAffected ? String(t.sitesAffected) : '';
   stampUpdated();
@@ -957,6 +965,7 @@ function openPanel(name) {
 for (const b of document.querySelectorAll('.dock-btn')) b.addEventListener('click', () => openPanel(b.dataset.panel));
 $('panel-close').addEventListener('click', () => openPanel(null));
 $('btn-feeds').addEventListener('click', () => openPanel('sources'));
+$('btn-peer').addEventListener('click', () => openPanel('sources'));
 $('kpi-clients').addEventListener('click', () => openPanel('clients'));
 $('kpi-net').addEventListener('click', () => {
   if (state.panel !== 'outages') openPanel('outages');
@@ -1097,6 +1106,7 @@ function renderSiteList() {
         h('span', {},
           h('span', { class: 'item-title' }, s.impact.province ? h('span', { class: 'prov-tag', text: s.impact.province }) : null, s.name),
           h('span', { class: 'item-meta', text: siteMeta(s) }),
+          s.pending ? h('span', { class: 'item-pending', text: state.snap.peer?.connected ? `Saving to ${state.snap.peer.peerName || 'the other site'}…` : `Waiting for ${state.snap.peer?.peerName || 'the other site'}; kept until it is back` }) : null,
         ),
         h('span', {}, h('span', { class: `status status-${s.impact.status}`, text: SITE_STATUS_TEXT[s.impact.status] })),
       ),
@@ -1114,10 +1124,28 @@ function renderTvFeed() {
 
 // --------------------------------------------------------------- sources --
 
+/** One line for a source read from the other site because ours is failing. */
+const viaLine = (src) =>
+  src.via ? h('p', { class: 'source-via', text: `Borrowed from ${src.via}: this site's own fetch is failing${src.ownError ? ` (${src.ownError})` : ''}.` }) : null;
+
 function renderSources() {
   const s = state.snap;
   const list = $('source-list');
   list.textContent = '';
+  const pr = s.peer;
+  if (pr?.configured) {
+    const t = pr.tunnel;
+    list.append(h('li', { class: 'prov-head', text: 'Two-site sync' }));
+    list.append(h('li', { class: 'source', dataset: { status: pr.connected ? 'ok' : 'down' } },
+      h('div', { class: 'source-head' }, h('span', { class: 'lamp-dot', 'aria-hidden': 'true' }), h('b', { text: `${pr.instance}${pr.peerName ? ` and ${pr.peerName}` : ''}` }), h('span', { class: 'source-state', text: pr.connected ? 'connected' : 'offline' })),
+      h('p', { text: `This site ${pr.role === 'owner' ? 'keeps the client list' : pr.role === 'mirror' ? `mirrors the client list kept at ${pr.peerName || 'the other site'}` : 'shares source data only'}; ${pr.calls ? 'it connects to the other site once a minute' : 'the other site connects to it'}.` }),
+      h('p', { text: pr.lastSeenAt ? `Last exchange ${ago(pr.lastSeenAt)}.` : 'No exchange yet.' }),
+      pr.pendingEdits ? h('p', { text: `${pr.pendingEdits} client edit${pr.pendingEdits === 1 ? '' : 's'} waiting to reach ${pr.role === 'mirror' ? pr.peerName || 'the other site' : 'this site'}.` }) : null,
+      t ? h('p', { text: `Cloudflare Tunnel: ${t.connected ? 'connected' : t.running ? 'starting' : 'not running'}${t.restarts ? `, restarted ${t.restarts}×` : ''}.` }) : null,
+      pr.lastError ? h('p', { class: 'source-error', text: `Last error: ${pr.lastError}` }) : null,
+      t?.lastError && !t.connected ? h('p', { class: 'source-error', text: `Tunnel: ${t.lastError}` }) : null,
+    ));
+  }
   const card = (src, lines) =>
     h('li', { class: 'source', dataset: { status: src.status } },
       h('div', { class: 'source-head' }, h('span', { class: 'lamp-dot', 'aria-hidden': 'true' }), h('b', { text: src.name }), h('span', { class: 'source-state', text: statusWord(src.status) })),
@@ -1131,6 +1159,7 @@ function renderSources() {
       list.append(card(src, [
         h('p', { text: src.region }),
         h('p', { text: `${fmt(src.outages)} unplanned, ${fmt(src.plannedActive)} planned now, ${fmt(src.customersOut)} customers out. Last good data ${ago(src.lastSuccessAt)}.` }),
+        viaLine(src),
         src.status === 'stale' ? h('p', { text: 'Showing its last good data while the feed is failing; dropped after 30 minutes.' }) : null,
         src.error ? h('p', { class: 'source-error', text: `Last error: ${src.error}` }) : null,
         src.map?.startsWith('http') ? h('p', {}, h('a', { href: src.map, target: '_blank', rel: 'noopener', text: `Open ${src.name}'s own outage map` })) : null,
@@ -1150,6 +1179,7 @@ function renderSources() {
         ];
         return long.length ? h('p', { text: `Ignored as long-running routing changes (open for more than 48 h): ${long.join(', ')}.` }) : null;
       })(),
+      viaLine(s.internet),
       s.internet.networksError ? h('p', { class: 'source-error', text: `Provider networks: ${s.internet.networksError}` }) : null,
       s.internet.error ? h('p', { class: 'source-error', text: `Last error: ${s.internet.error}` }) : null,
       h('p', { text: 'Data: IODA, Georgia Tech. Measured connectivity, not provider status pages.' }),
@@ -1160,11 +1190,12 @@ function renderSources() {
     list.append(h('li', { class: 'prov-head', text: 'Internet provider outage pages' }));
     for (const src of pages)
       list.append(card(src, [
-        h('p', { text: `${fmt(src.notices)} open notice${src.notices === 1 ? '' : 's'} with Internet affected. Last good data ${ago(src.lastSuccessAt)}.` }),
+        h('p', { text: `${fmt(src.notices)} open notice${src.notices === 1 ? '' : 's'}. Last good data ${ago(src.lastSuccessAt)}.` }),
+        viaLine(src),
         src.error ? h('p', { class: 'source-error', text: `Last error: ${src.error}` }) : null,
         h('p', {}, h('a', { href: src.page, target: '_blank', rel: 'noopener', text: `Open ${src.name}'s outage page` })),
       ]));
-    list.append(h('li', {}, h('p', { class: 'hint', text: 'Bell checks addresses behind a CAPTCHA, and Eastlink, Cogeco and Xplore publish no public map, so those clients rely on the network signals above.' })));
+    list.append(h('li', {}, h('p', { class: 'hint', text: 'Bell checks addresses behind a CAPTCHA, and Starlink, Xplore and most small providers publish no outage map: those clients rely on network signals and the connection check (see the Internet panel).' })));
   }
   const cov = $('coverage');
   cov.textContent = '';
@@ -1264,6 +1295,8 @@ function renderHistory() {
     else if (e.type === 'planned-started') [cls, text] = ['', `Planned work began: ${who}, ${where}${cust}`];
     else if (e.type === 'planned-ended') [cls, text] = ['ev-end', `Planned work finished: ${who}, ${where}`];
     else if (e.type === 'site-status') [cls, text] = ['ev-site', `${e.site}: ${SITE_STATUS_TEXT[e.to] || e.to}`];
+    else if (e.type === 'peer-edit') [cls, text] = ['ev-site', `From ${e.from}: ${e.what}`];
+    else if (e.type === 'peer-edit-skipped') [cls, text] = ['ev-site', `From ${e.from}, not applied: ${e.what}`];
     else continue;
     list.append(h('li', {}, h('time', { datetime: new Date(e.t).toISOString(), text: LOCAL.format(new Date(e.t)) }), h('span', { class: cls, text })));
   }
@@ -1816,7 +1849,7 @@ function boardRow(r) {
               h('span', { class: `status status-${s.impact.status}`, text: SITE_STATUS_TEXT[s.impact.status] }), ' ', s.name)))) : null,
           h('p', { class: 'b-about', text: r.about || '' }),
           h('p', { class: 'b-links' },
-            feed ? h('span', { text: `Outage map ${feed.status === 'ok' ? 'read' : feed.status === 'stale' ? 'stale' : 'unreachable'}${feed.checkedAt ? ` ${ago(feed.checkedAt)}` : ''}` }) : null,
+            feed ? h('span', { text: `Outage map ${feed.status === 'ok' ? 'read' : feed.status === 'stale' ? 'stale' : 'unreachable'}${feed.checkedAt ? ` ${ago(feed.checkedAt)}` : ''}${feed.via ? `, via ${feed.via}` : ''}` }) : null,
             r.page ? h('a', { href: r.page, target: '_blank', rel: 'noopener', text: `${r.name} outage page` }) : null,
           ),
         )

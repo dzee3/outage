@@ -119,6 +119,10 @@ export function createMonitor({
   let previousSiteStatus = new Map();
   let lastHistoryAt = 0;
   let running = null;
+  // The peer's copies of feeds it fetched itself: used only when ours fail.
+  /** `${source}:${feed}` → {rows, lastSuccessAt (our clock), originAt (its clock), from} */
+  const borrowed = new Map();
+  let internetBorrowed = null;
 
   async function refreshFeed(source, feed) {
     const key = `${source.id}:${feed.id}`;
@@ -156,12 +160,26 @@ export function createMonitor({
     }
   }
 
+  /**
+   * Our copy when it is healthy; the peer's when ours is failing and the
+   * peer's is newer and still fresh. Borrowed copies carry `via`.
+   */
+  function pick(key, clock) {
+    const own = feeds.get(key);
+    const theirs = borrowed.get(key);
+    const fresh = (x) => x?.rows && x.lastSuccessAt && clock - x.lastSuccessAt < STALE_DROP_MS;
+    if (fresh(own) && !own.error) return own;
+    if (fresh(theirs) && (!fresh(own) || theirs.lastSuccessAt > own.lastSuccessAt))
+      return { rows: theirs.rows, lastSuccessAt: theirs.lastSuccessAt, lastAttemptAt: own?.lastAttemptAt || 0, error: null, via: theirs.from, ownError: own?.error || null };
+    return own;
+  }
+
   function assemble() {
     const clock = now();
     const usable = (s) => s?.rows && s.lastSuccessAt && clock - s.lastSuccessAt < STALE_DROP_MS;
     const rows = [];
     const sourceViews = sources.map((source) => {
-      const states = source.feeds.map((f) => feeds.get(`${source.id}:${f.id}`));
+      const states = source.feeds.map((f) => pick(`${source.id}:${f.id}`, clock));
       const live = states[0];
       const sourceRows = states.filter(usable).flatMap((s) => s.rows);
       rows.push(...sourceRows);
@@ -177,28 +195,37 @@ export function createMonitor({
         status,
         lastSuccessAt: live?.lastSuccessAt || null,
         error: live?.error || null,
+        via: live?.via || null,
+        ownError: live?.ownError || null,
         plannedError: states.length > 1 ? states[1]?.error || null : null,
         ...summarize(sourceRows),
       };
     });
 
     if (internetSource) {
+      const okOwn = internetState.value && internetState.lastSuccessAt && clock - internetState.lastSuccessAt < STALE_DROP_MS;
+      const okPeer = internetBorrowed && clock - internetBorrowed.lastSuccessAt < STALE_DROP_MS;
+      const usePeer = okPeer && (!okOwn || (internetState.error && internetBorrowed.lastSuccessAt > internetState.lastSuccessAt));
+      const iState = usePeer
+        ? { value: internetBorrowed.value, lastSuccessAt: internetBorrowed.lastSuccessAt, error: null }
+        : internetState;
       const fresh =
-        internetState.value &&
-        internetState.lastSuccessAt &&
-        clock - internetState.lastSuccessAt < STALE_DROP_MS;
+        iState.value &&
+        iState.lastSuccessAt &&
+        clock - iState.lastSuccessAt < STALE_DROP_MS;
       internet = {
+        via: usePeer ? internetBorrowed.from : null,
         id: internetSource.id,
         name: internetSource.name,
         region: internetSource.region,
         map: internetSource.map,
-        status: !fresh ? 'down' : internetState.error ? 'stale' : 'ok',
-        lastSuccessAt: internetState.lastSuccessAt,
-        error: internetState.error,
-        provinces: fresh ? internetState.value.provinces : {},
-        networks: fresh ? internetState.value.networks || {} : {},
-        networksError: fresh ? internetState.value.networksError || null : null,
-        recent: fresh ? internetState.value.recent : [],
+        status: !fresh ? 'down' : iState.error ? 'stale' : 'ok',
+        lastSuccessAt: iState.lastSuccessAt,
+        error: iState.error,
+        provinces: fresh ? iState.value.provinces : {},
+        networks: fresh ? iState.value.networks || {} : {},
+        networksError: fresh ? iState.value.networksError || null : null,
+        recent: fresh ? iState.value.recent : [],
       };
     }
 
@@ -310,8 +337,44 @@ export function createMonitor({
     return running;
   }
 
+  /** Feeds this instance fetched itself and still holds fresh, minus what the peer already has. */
+  function exportFeeds(have = {}) {
+    const clock = now();
+    const out = [];
+    for (const [key, f] of feeds)
+      if (f.rows && f.lastSuccessAt && clock - f.lastSuccessAt < STALE_DROP_MS && have[key] !== f.lastSuccessAt)
+        out.push({ key, rows: f.rows, fetchedAt: f.lastSuccessAt, error: f.error });
+    return out;
+  }
+  function exportInternet(haveAt = null) {
+    const s = internetState;
+    if (!s.value || !s.lastSuccessAt || now() - s.lastSuccessAt >= STALE_DROP_MS || haveAt === s.lastSuccessAt) return null;
+    return { value: s.value, fetchedAt: s.lastSuccessAt };
+  }
+  /** offsetMs turns the peer's clock into ours. */
+  function importPeer({ feeds: list = [], internet: net = null }, { offsetMs = 0, from = 'peer' } = {}) {
+    const known = new Set(sources.flatMap((s) => s.feeds.map((f) => `${s.id}:${f.id}`)));
+    for (const f of list) {
+      if (!known.has(f.key) || !Array.isArray(f.rows) || !Number.isFinite(f.fetchedAt)) continue;
+      borrowed.set(f.key, { rows: f.rows, lastSuccessAt: f.fetchedAt + offsetMs, originAt: f.fetchedAt, from });
+    }
+    if (net?.value && Number.isFinite(net.fetchedAt))
+      internetBorrowed = { value: net.value, lastSuccessAt: net.fetchedAt + offsetMs, originAt: net.fetchedAt, from };
+  }
+  /** What we hold from the peer, by its own fetch time (so it sends only newer). */
+  function borrowedHave() {
+    return {
+      feeds: Object.fromEntries([...borrowed].map(([k, v]) => [k, v.originAt])),
+      internet: internetBorrowed?.originAt ?? null,
+    };
+  }
+
   return {
     tick,
+    exportFeeds,
+    exportInternet,
+    importPeer,
+    borrowedHave,
     /** Rebuild site impacts after a site edit, without polling. */
     reassess: () => assemble(),
     snapshot: () => snapshot,

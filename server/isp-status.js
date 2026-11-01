@@ -525,11 +525,15 @@ export function ispStatusFor(site, notices, health, nowMs = Date.now(), ctx = {}
   // 6. The client's own connection.
   if (site.monitorHost) {
     const w = ctx.wan;
-    const state = !w ? 'pending' : w.state === 'up' ? 'clear' : w.state === 'down' ? 'out' : w.state === 'invalid' ? 'unknown' : 'pending';
+    const state = !w ? 'pending' : w.state === 'up' ? 'clear' : w.state === 'down' ? 'out' : w.state === 'split' ? 'nearby' : w.state === 'invalid' ? 'unknown' : 'pending';
     if (state === 'out') out = true;
     checks.push({
       id: 'wan', label: `Connection check (${site.monitorHost})`, state, link: null,
-      text: !w ? 'First check pending' : w.state === 'up' ? `Answering${w.rttMs != null ? `, ${w.rttMs} ms` : ''} (${w.method})` : w.state === 'down' ? `No answer since ${new Date(w.since).toLocaleTimeString('en-CA', { timeZone: 'America/Edmonton', hour: 'numeric', minute: '2-digit' })}` : w.state === 'invalid' ? w.error : 'Checking…',
+      text: !w ? 'First check pending'
+        : w.state === 'up' ? `Answering${w.rttMs != null ? `, ${w.rttMs} ms` : ''}${w.sites?.length > 1 ? ' at both sites' : w.sites?.length === 1 ? ` (checked by ${w.sites[0]})` : ` (${w.method})`}`
+        : w.state === 'down' ? `No answer${w.sites?.length > 1 ? ' from either site' : ''} since ${new Date(w.since).toLocaleTimeString('en-CA', { timeZone: 'America/Edmonton', hour: 'numeric', minute: '2-digit' })}`
+        : w.state === 'split' ? `${w.down} can't reach it but ${w.up} can, so most likely ${w.down}'s own internet`
+        : w.state === 'invalid' ? w.error : 'Checking…',
       checkedAt: w?.lastCheckAt || null,
     });
   }
@@ -603,6 +607,9 @@ export function createIspStatus({ request, requestText, requestRaw = null, geoco
   const state = {};
   /** siteId → per-address check result (Eastlink) */
   const siteChecks = new Map();
+  /** The peer's copies: provider feeds and address checks (see chosen). */
+  const borrowed = {};
+  const peerChecks = new Map();
   const areaPointCache = new Map();
   let running = null;
 
@@ -713,10 +720,21 @@ export function createIspStatus({ request, requestText, requestRaw = null, geoco
     return running;
   }
 
+  /** Our copy when healthy; the peer's when ours is failing and theirs is newer and fresh. */
+  function chosen(key) {
+    const own = state[key];
+    const theirs = borrowed[key];
+    const fresh = (x) => x?.lastSuccessAt && now() - x.lastSuccessAt < STALE_DROP_MS;
+    if (fresh(own) && !own.error) return own;
+    if (fresh(theirs) && (!fresh(own) || theirs.lastSuccessAt > own.lastSuccessAt))
+      return { notices: theirs.notices, lastSuccessAt: theirs.lastSuccessAt, error: null, via: theirs.from, ownError: own?.error || null };
+    return own;
+  }
+
   function health() {
     const out = {};
     for (const key of FEEDS) {
-      const s = state[key];
+      const s = chosen(key);
       const fresh = s?.lastSuccessAt && now() - s.lastSuccessAt < STALE_DROP_MS;
       out[key] = {
         id: key,
@@ -725,10 +743,41 @@ export function createIspStatus({ request, requestText, requestRaw = null, geoco
         status: !fresh ? 'down' : s.error ? 'stale' : 'ok',
         lastSuccessAt: s?.lastSuccessAt || null,
         error: s?.error || null,
+        via: s?.via || null,
+        ownError: s?.ownError || null,
         notices: fresh ? s.notices.length : 0,
       };
     }
     return out;
+  }
+
+  /** Provider feeds this instance fetched itself, minus what the peer already has. */
+  function exportFeeds(have = {}) {
+    const out = [];
+    for (const key of FEEDS) {
+      const f = state[key];
+      if (f?.lastSuccessAt && now() - f.lastSuccessAt < STALE_DROP_MS && have[key] !== f.lastSuccessAt)
+        out.push({ key, notices: f.notices, fetchedAt: f.lastSuccessAt, error: f.error });
+    }
+    return out;
+  }
+  /** Our own address lookups (Eastlink), by site id. */
+  const exportSiteChecks = () => Object.fromEntries([...siteChecks].filter(([, c]) => c.checkedAt && !c.error));
+  function importPeer({ feeds: list = [], siteChecks: checks = {} }, { offsetMs = 0, from = 'peer' } = {}) {
+    for (const f of list) {
+      if (!FEEDS.includes(f.key) || !Array.isArray(f.notices) || !Number.isFinite(f.fetchedAt)) continue;
+      borrowed[f.key] = { notices: f.notices, lastSuccessAt: f.fetchedAt + offsetMs, originAt: f.fetchedAt, from };
+    }
+    for (const [id, c] of Object.entries(checks || {}))
+      if (c && Number.isFinite(c.checkedAt)) peerChecks.set(id, { ...c, checkedAt: c.checkedAt + offsetMs, via: from });
+  }
+  const borrowedHave = () => Object.fromEntries(Object.entries(borrowed).map(([k, v]) => [k, v.originAt]));
+  /** Our lookup, unless it failed and the peer has a newer good one. */
+  function siteCheck(id) {
+    const own = siteChecks.get(id) || null;
+    const theirs = peerChecks.get(id) || null;
+    if (theirs && (!own || own.error) && now() - theirs.checkedAt < STALE_DROP_MS) return theirs;
+    return own;
   }
 
   /** Per-address lookups for clients whose provider offers one (Eastlink). */
@@ -766,7 +815,7 @@ export function createIspStatus({ request, requestText, requestRaw = null, geoco
 
   function notices() {
     const h = health();
-    return Object.entries(state).flatMap(([key, s]) => (h[key].status === 'down' ? [] : s.notices || []));
+    return FEEDS.flatMap((key) => (h[key].status === 'down' ? [] : chosen(key)?.notices || []));
   }
 
   return {
@@ -774,7 +823,11 @@ export function createIspStatus({ request, requestText, requestRaw = null, geoco
     refreshSites,
     notices,
     health,
-    siteCheck: (id) => siteChecks.get(id) || null,
-    statusFor: (site, ctx = {}) => ispStatusFor(site, notices(), health(), now(), { ...ctx, siteCheck: siteChecks.get(site.id) || null }),
+    siteCheck,
+    exportFeeds,
+    exportSiteChecks,
+    importPeer,
+    borrowedHave,
+    statusFor: (site, ctx = {}) => ispStatusFor(site, notices(), health(), now(), { ...ctx, siteCheck: siteCheck(site.id) }),
   };
 }

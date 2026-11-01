@@ -195,6 +195,52 @@ predate the change.
 | `EDIT_TOKEN` | empty | Code required to change client sites |
 | `INTERNET` | `on` | `off` hides the IODA layer |
 | `DEMO` | `0` | `1` replays sample data |
+| `INSTANCE_NAME` | `Outage Desk` | This site's name, shown on the other site (two-site setup) |
+| `SITES` | empty | `owner` keeps the client list, `mirror` copies it (two-site setup) |
+| `PEER_KEY` | empty | Shared secret, the same on both sites; 32+ random characters |
+| `PEER_URL` | empty | Where this site reaches the other (only on the side that connects) |
+| `PEER_ACCESS_ID`, `PEER_ACCESS_SECRET` | empty | Cloudflare Access service token for `PEER_URL` |
+| `TUNNEL_TOKEN` | empty | Cloudflare Tunnel token; starts the bundled `cloudflared` |
+
+## Two sites
+
+Two instances can cover for each other: each fetches every source itself,
+and once a minute they swap what each fetched. A source is taken from the
+other site only while this site's own fetch is failing (Telus refusing a
+home connection, say), and is labelled "Borrowed from …" in Sources. Neither
+passes on what it borrowed. A chip at the top shows the other site and
+whether it is connected.
+
+- **Client list:** the `owner` keeps it and the `mirror` copies it (a backup
+  of the mirror's old list is saved as `sites.before-peer.json`). Edits work
+  on both. An edit on the mirror shows at once, is queued on disk with no time
+  limit, and is applied by the owner, in order, at the next exchange (within
+  15 seconds while edits wait). If both sites changed the same client, the
+  later change wins; synced edits appear in History.
+- **Connection check:** both sites ping each client. A client is down only
+  when both lose it; when only one does, it shows that site's own internet as
+  the likely cause instead of raising an alert.
+- **The link:** only the side with `PEER_URL` connects. In the office + home
+  setup the office connects out over HTTPS to a Cloudflare Tunnel run by the
+  home container, so nothing is opened at either site and the home address
+  never appears in DNS. Requests that arrive through the tunnel can only reach
+  the sync endpoint, and need both the Cloudflare Access token and the peer key.
+
+Setting it up:
+
+1. In the Cloudflare Zero Trust dashboard, create a tunnel and copy its token.
+   Give it a public hostname (for example `outage-peer.example.ca`) with path
+   `^/api/peer/` and service `http://localhost:8080`.
+2. Add an Access application for that hostname with a Service Auth policy and
+   create a service token for it (Client ID and Client Secret).
+3. Home (`SITES=mirror`): set `INSTANCE_NAME`, `PEER_KEY` and `TUNNEL_TOKEN`.
+4. Office (`SITES=owner`): set `INSTANCE_NAME`, the same `PEER_KEY`,
+   `PEER_URL=https://outage-peer.example.ca`, `PEER_ACCESS_ID` and
+   `PEER_ACCESS_SECRET`.
+5. Check Sources on both: "Two-site sync" says connected.
+
+Generate a peer key with `openssl rand -hex 32`. Both sites must run the same
+version of Outage Desk; a mismatch pauses syncing and says so in Sources.
 
 ## Adding a province
 

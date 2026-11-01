@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -172,6 +172,14 @@ export function sitesToCsv(sites) {
   return `${lines.join('\n')}\n`;
 }
 
+/** JSON with object keys sorted, so equal lists hash equal whatever their key order. */
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && typeof value === 'object')
+    return `{${Object.keys(value).sort().filter((k) => value[k] !== undefined).map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+
 export function createStore(dataDir, { now = () => Date.now() } = {}) {
   mkdirSync(dataDir, { recursive: true });
   const sitesFile = path.join(dataDir, 'sites.json');
@@ -194,11 +202,14 @@ export function createStore(dataDir, { now = () => Date.now() } = {}) {
   writeAtomic(historyFile, history.map((h) => JSON.stringify(h)).join('\n') + (history.length ? '\n' : ''));
 
   const saveSites = () => writeAtomic(sitesFile, `${JSON.stringify(sites, null, 2)}\n`);
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
   return {
     listSites: () => sites.slice(),
-    addSite(input) {
-      const site = { id: randomUUID(), ...validateSite(input) };
+    /** `id` lets a peer's edit keep the id it was given where it was made. */
+    addSite(input, { id = null } = {}) {
+      const useId = id && UUID.test(id) && !sites.some((s) => s.id === id) ? id : randomUUID();
+      const site = { id: useId, ...validateSite(input) };
       sites.push(site);
       saveSites();
       return site;
@@ -221,6 +232,16 @@ export function createStore(dataDir, { now = () => Date.now() } = {}) {
       sites = append ? [...sites, ...fresh] : fresh;
       saveSites();
       return fresh.length;
+    },
+    /** Fingerprint of the client list: equal lists, equal versions. */
+    sitesVersion: () => createHash('sha256').update(canonical(sites)).digest('hex').slice(0, 16),
+    getSite: (id) => sites.find((s) => s.id === id) || null,
+    /** The owner's list, exactly (ids kept). A copy of the old list is kept once. */
+    setSitesExact(list) {
+      const backup = path.join(dataDir, 'sites.before-peer.json');
+      if (!existsSync(backup) && existsSync(sitesFile)) writeAtomic(backup, readFileSync(sitesFile, 'utf8'));
+      sites = list.filter((s) => s && UUID.test(s.id)).map((s) => ({ id: s.id, ...validateSite(s) }));
+      saveSites();
     },
     addEvents(list) {
       if (!list.length) return;

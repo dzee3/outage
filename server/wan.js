@@ -72,9 +72,30 @@ export async function checkTarget(target, { timeoutMs = 3000, ping = pingCheck, 
   return viaPing || { up: false, rttMs: null, method: 'tcp/443,80', error: 'no answer' };
 }
 
-export function createWanMonitor({ now = () => Date.now(), intervalMs = 60_000, check = checkTarget, log = console } = {}) {
+const PEER_FRESH_MS = 5 * 60_000;
+
+/**
+ * Two sites' checks of one client → one answer. Down only when both lose
+ * it; when one site loses it and the other doesn't, the problem is most
+ * likely that site's own internet: 'split', shown but not alerted.
+ */
+export function combineWan(own, peer, { selfName = 'This site', nowMs = Date.now() } = {}) {
+  const known = (r) => r && (r.state === 'up' || r.state === 'down');
+  const peerOk = known(peer) && nowMs - peer.lastCheckAt < PEER_FRESH_MS;
+  if (!peerOk) return own || null;
+  if (!known(own)) return { ...peer, sites: [peer.via] };
+  const names = [selfName, peer.via];
+  if (own.state === peer.state)
+    return { ...own, since: Math.max(own.since, peer.since), sites: names, rttMs: own.rttMs ?? peer.rttMs };
+  const [down, up] = own.state === 'down' ? [selfName, peer.via] : [peer.via, selfName];
+  return { ...own, state: 'split', down, up, since: own.state === 'down' ? own.since : peer.since, sites: names };
+}
+
+export function createWanMonitor({ now = () => Date.now(), intervalMs = 60_000, check = checkTarget, log = console, selfName = 'This site' } = {}) {
   /** siteId → {target, state, since, lastCheckAt, rttMs, method, fails, error} */
   const results = new Map();
+  /** siteId → the peer's result for the same client (our clock) */
+  const peerResults = new Map();
   let running = null;
 
   async function run(sites) {
@@ -124,5 +145,17 @@ export function createWanMonitor({ now = () => Date.now(), intervalMs = 60_000, 
     return running;
   }
 
-  return { run, get: (id) => results.get(id) || null };
+  return {
+    run,
+    /** Combined with the peer's check when there is one. */
+    get: (id) => combineWan(results.get(id) || null, peerResults.get(id) || null, { selfName, nowMs: now() }),
+    own: (id) => results.get(id) || null,
+    exportResults: () =>
+      Object.fromEntries([...results].filter(([, r]) => r.state === 'up' || r.state === 'down').map(([id, r]) => [id, { target: r.target, state: r.state, since: r.since, lastCheckAt: r.lastCheckAt, rttMs: r.rttMs, method: r.method }])),
+    importPeer(list = {}, { offsetMs = 0, from = 'peer' } = {}) {
+      for (const [id, r] of Object.entries(list || {}))
+        if (r && Number.isFinite(r.lastCheckAt) && (r.state === 'up' || r.state === 'down'))
+          peerResults.set(id, { ...r, since: r.since + offsetMs, lastCheckAt: r.lastCheckAt + offsetMs, via: from });
+    },
+  };
 }

@@ -16,6 +16,9 @@ import { utilityById } from './utilities.js';
 import { demoSources, demoInternet } from './demo.js';
 import { createStore, sitesFromCsv, sitesToCsv } from './store.js';
 import { createMonitor, provinceOf } from './monitor.js';
+import { createEditQueue, createPeer } from './peer.js';
+import { startTunnel, tunnelStatus } from './tunnel.js';
+import { randomUUID } from 'node:crypto';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = path.join(ROOT, 'web');
@@ -29,7 +32,20 @@ const config = {
   demo: env.DEMO === '1',
   internet: env.INTERNET !== 'off',
   editToken: env.EDIT_TOKEN || '',
+  // Two-site setup (see the README): which side keeps the client list, how
+  // the office reaches home, and the secrets that guard it.
+  instanceName: (env.INSTANCE_NAME || 'Outage Desk').slice(0, 60),
+  sites: ['owner', 'mirror'].includes(env.SITES) ? env.SITES : '',
+  peerKey: env.PEER_KEY || '',
+  peerUrl: env.PEER_URL || '',
+  peerAccessId: env.PEER_ACCESS_ID || '',
+  peerAccessSecret: env.PEER_ACCESS_SECRET || '',
+  tunnelToken: env.TUNNEL_TOKEN || '',
+  // Tests only: sync more often than once a minute.
+  peerSyncMs: Math.max(1, Number(env.PEER_SYNC_SECONDS || 60)) * 1000,
 };
+if (config.peerUrl && !config.peerKey) console.error('[peer] PEER_URL is set without PEER_KEY; peer sync stays off');
+if (config.peerKey && config.peerKey.length < 24) console.error('[peer] PEER_KEY is short; use 32 or more random characters');
 
 const now = () => Date.now();
 const request = (url, options) => requestJson(url, options);
@@ -73,7 +89,7 @@ const territory = createTerritory({ dataDir: config.dataDir, requestRaw, request
 const geocoder = createGeocoder({ request });
 const isp = createIspLookup({ request, dataDir: config.dataDir, now });
 const ispStatus = createIspStatus({ request, requestText, requestRaw, geocoder, now });
-const wan = createWanMonitor({ now });
+const wan = createWanMonitor({ now, selfName: config.instanceName });
 /** Everything ispStatus needs beyond the site itself. */
 const ispCtx = (site, extra = {}) => ({ wan: wan.get(site.id), ...extra });
 
@@ -95,6 +111,7 @@ function utilityFor(site, province) {
   return utilityCache.get(key);
 }
 
+const editQueue = createEditQueue(config.dataDir);
 const monitor = createMonitor({
   sources,
   internetSource: !config.internet
@@ -109,6 +126,22 @@ const monitor = createMonitor({
   ispFor: config.demo ? null : (site, ctx) => ispStatus.statusFor(site, ispCtx(site, ctx)),
   now,
 });
+const peer = createPeer({
+  config: { ...config, peerUrl: config.peerKey ? config.peerUrl : '' },
+  store,
+  queue: editQueue,
+  monitor,
+  ispStatus,
+  wan,
+  now,
+  syncEveryMs: config.peerSyncMs,
+  onChange: ({ sitesChanged }) => {
+    if (sitesChanged) utilityCache.clear();
+    monitor.reassess();
+  },
+});
+const mirror = config.sites === 'mirror' && Boolean(config.peerKey);
+
 if (!config.demo)
   territory.refresh().then(() => {
     utilityCache.clear();
@@ -202,12 +235,19 @@ function serveStatic(req, res, pathname) {
 async function handle(req, res) {
   const url = new URL(req.url, 'http://local');
   const p = url.pathname;
+  // Anything that came in through the Cloudflare Tunnel may only sync.
+  if (config.tunnelToken && (req.headers['cf-connecting-ip'] || req.headers['cf-ray']) && p !== '/api/peer/sync')
+    return json(res, 404, { error: 'Not found.' });
   try {
     if (p === '/healthz') return json(res, 200, { ok: true, demo: config.demo });
+    if (p === '/api/peer/sync' && req.method === 'POST') return await peer.handle(req, res);
     if (p === '/api/snapshot' && req.method === 'GET') {
       const snap = monitor.snapshot() || (await monitor.tick());
+      const waiting = mirror ? editQueue.pendingIds() : null;
       return json(res, 200, {
         ...snap,
+        sites: waiting?.size ? snap.sites.map((s) => (waiting.has(s.id) ? { ...s, pending: true } : s)) : snap.sites,
+        peer: { ...peer.status(), tunnel: config.tunnelToken ? tunnelStatus() : null },
         ispNotices: ispStatus.notices().map(({ text, ...n }) => n),
         ispSources: ispStatus.health(),
         ispBoard: providerBoard({
@@ -292,28 +332,36 @@ async function handle(req, res) {
         return json(res, 403, { error: 'Editing sites needs the edit code (EDIT_TOKEN).' });
       if (p === '/api/sites' && req.method === 'GET') return json(res, 200, { sites: store.listSites() });
       if (p === '/api/sites' && req.method === 'POST') {
-        const site = store.addSite(JSON.parse(await readBody(req)));
+        const input = JSON.parse(await readBody(req));
+        const site = store.addSite(input, { id: mirror ? randomUUID() : null });
+        if (mirror) editQueue.push({ kind: 'add', siteId: site.id, input });
         utilityCache.clear();
         monitor.reassess();
         return json(res, 201, { site });
       }
       if (p === '/api/sites/import' && req.method === 'POST') {
-        const { sites, errors } = sitesFromCsv(await readBody(req));
+        const csv = await readBody(req);
+        const { sites, errors } = sitesFromCsv(csv);
         if (!sites.length) return json(res, 400, { error: errors[0] || 'No sites found.', errors });
-        const count = store.replaceSites(sites, { append: url.searchParams.get('mode') !== 'replace' });
+        const mode = url.searchParams.get('mode') === 'replace' ? 'replace' : 'append';
+        const count = store.replaceSites(sites, { append: mode !== 'replace' });
+        if (mirror) editQueue.push({ kind: 'import', csv, mode });
         monitor.reassess();
         return json(res, 200, { imported: count, errors });
       }
       const match = /^\/api\/sites\/([0-9a-f-]{36})$/.exec(p);
       if (match && req.method === 'PUT') {
-        const site = store.updateSite(match[1], JSON.parse(await readBody(req)));
+        const input = JSON.parse(await readBody(req));
+        const site = store.updateSite(match[1], input);
         if (!site) return json(res, 404, { error: 'That site no longer exists.' });
+        if (mirror) editQueue.push({ kind: 'update', siteId: site.id, input });
         utilityCache.clear();
         monitor.reassess();
         return json(res, 200, { site });
       }
       if (match && req.method === 'DELETE') {
         if (!store.removeSite(match[1])) return json(res, 404, { error: 'That site no longer exists.' });
+        if (mirror) editQueue.push({ kind: 'remove', siteId: match[1] });
         monitor.reassess();
         return json(res, 200, { removed: true });
       }
@@ -341,6 +389,8 @@ server.listen(config.port, config.host, () => {
 
 // Poll in the background so history and alerts keep going with no one watching.
 await monitor.tick();
+if (config.tunnelToken && !config.demo) startTunnel({ token: config.tunnelToken });
+peer.start();
 if (config.demo && store.historySince(now() - 24 * 3600_000).length < 2) seedDemoHistory();
 
 /** Demo only: a made-up 24 h curve (an overnight wind event) so the chart has a shape. */

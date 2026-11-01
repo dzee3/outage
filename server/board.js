@@ -51,7 +51,7 @@ export function providerBoard({ province = 'AB', notices = [], health = {}, netw
           ? { asns: p.asns, active: drop.length > 0, since: drop.length ? Math.min(...drop.map((n) => n.since)) : null, signals: [...new Set(drop.flatMap((n) => n.signals))], watched: nets.length > 0 }
           : null,
         clients: { total: clients.length, affected: affected.length, names: affected.map((s) => s.name).slice(0, 6) },
-        feed: feed ? { status: feed.status, checkedAt: feed.lastSuccessAt, error: feed.error } : null,
+        feed: feed ? { status: feed.status, checkedAt: feed.lastSuccessAt, error: feed.error, via: feed.via || null } : null,
         page: p.page,
         about: p.about,
       };
