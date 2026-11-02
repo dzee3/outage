@@ -1405,15 +1405,16 @@ $('btn-alerts').addEventListener('click', async () => {
 /** Short badge for what a suggestion stands for. */
 const KIND_BADGES = {
   address: ['Exact', 'exact'],
-  estimated: ['On street', 'exact'],
+  estimated: ['Estimated', 'exact'],
   nearest: ['Nearest address', 'approx'],
   road: ['Street', 'approx'],
   street: ['Street', 'approx'],
   postcode: ['Postal code', 'approx'],
   'postal-area': ['Postal area', 'approx'],
 };
+const ROAD_KINDS = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'highway']);
 const kindBadge = (p) => {
-  const [text, tone] = KIND_BADGES[p.kind] || [p.precise ? 'Exact' : 'Area', p.precise ? 'exact' : ''];
+  const [text, tone] = KIND_BADGES[p.kind] || (ROAD_KINDS.has(p.kind) ? ['Street', 'approx'] : [p.precise ? 'Exact' : 'Area', p.precise ? 'exact' : '']);
   return h('span', { class: `kind ${tone}`, text });
 };
 

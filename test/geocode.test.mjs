@@ -178,3 +178,42 @@ test('store: moving a pin by hand clears its gap; geoChecked keeps its version',
   assert.equal('geoGap' in validateSite({ lat: 51.07, lon: -114.2 }, base), false, 'a moved pin drops it');
   assert.equal('geoGap' in validateSite({ geoGap: null }, base), false);
 });
+
+test('search: the address as typed comes first, pinned on the best match; a missing house is asked again', async () => {
+  const { createGeocoder, typedAddress } = await import('../server/geocode.js');
+  assert.equal(typedAddress('Marex Canada Limited\n541 Kingsview Way SE #102\nAirdrie, AB T4A 0C9'), '541 Kingsview Way SE #102, Airdrie, AB T4A 0C9');
+  assert.equal(typedAddress('515 Cougar Ridge Dr SW, Calgary, AB T3H 5G9'), '515 Cougar Ridge Dr SW, Calgary, AB T3H 5G9');
+  let geoCalls = 0;
+  let geoDown = true;
+  const request = async (url) => {
+    const u = new URL(url);
+    if (u.hostname.includes('geolocator')) {
+      if (u.searchParams.get('keys') === 'locate') geoCalls += 1;
+      if (geoDown) throw new Error('timed out');
+      return u.searchParams.get('keys') === 'locate'
+        ? [{ key: 'locate', name: '515 Cougar Ridge Drive Southwest, Calgary, Alberta', province: 'Alberta', category: 'Street', lat: 51.07269395, lng: -114.219471475, tag: ['INTERPOLATED_POSITION'] }]
+        : [];
+    }
+    if (u.hostname.includes('photon')) return { features: [] };
+    if (u.searchParams.get('postalcode')) return [];
+    if (u.searchParams.get('street') || u.searchParams.get('q'))
+      return [{ lat: '51.0715265', lon: '-114.2049758', addresstype: 'road', type: 'tertiary', display_name: 'Cougar Ridge Drive SW, Calgary', address: { road: 'Cougar Ridge Drive SW', city: 'Calgary', 'ISO3166-2-lvl4': 'CA-AB', postcode: 'T3H 4X2' } }];
+    return [];
+  };
+  const g = createGeocoder({ request, minIntervalMs: 0, log: null });
+  const q = '515 Cougar Ridge Dr SW, Calgary, AB T3H 5G9';
+  // NRCan down (both tries): the typed address still comes first, pinned on the street.
+  let r = await g.search(q);
+  assert.equal(geoCalls, 2, 'one retry');
+  assert.equal(r[0].label, q);
+  assert.equal(r[0].address, q);
+  assert.equal(r[0].typed, true);
+  assert.equal(r[0].precise, false);
+  // That weaker answer wasn't remembered: once NRCan answers, the house is found.
+  geoDown = false;
+  r = await g.search(q);
+  assert.equal(r[0].label, q, 'still exactly what was typed');
+  assert.deepEqual([r[0].kind, r[0].precise, r[0].lat], ['estimated', true, 51.07269395]);
+  assert.match(r[0].full, /^Pin: 515 Cougar Ridge Drive/);
+  assert.ok(!r.slice(1).some((p) => p.lat === 51.07269395), 'the match it is pinned on is not listed twice');
+});

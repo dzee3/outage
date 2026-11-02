@@ -255,12 +255,40 @@ export function placeFromGeolocator(r) {
 }
 
 const KIND_RANK = { address: 0, estimated: 1, nearest: 2, road: 3, street: 3, postcode: 4, 'postal-area': 5 };
+// OpenStreetMap names a street by its road class; all of them are streets here.
+const ROAD_KINDS = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'road', 'street', 'highway'];
+const kindRank = (k) => KIND_RANK[k] ?? (ROAD_KINDS.includes(k) ? 3 : 6);
 const valid = (p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon) && p.label;
+
+/**
+ * A street address as typed always comes first, exactly as typed (so it is
+ * what gets saved), pinned on the best place found and badged with how
+ * exact that place is. The match it is pinned on is not listed twice.
+ */
+/**
+ * The address as the person gave it, on one line, from its street line on
+ * ("Marex Canada Limited / 541 Kingsview Way SE #102 / Airdrie" → "541
+ * Kingsview Way SE #102, Airdrie"). Units and postal codes stay.
+ */
+export function typedAddress(q) {
+  const parts = String(q || '')
+    .split(/[\r\n]+|,/)
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const start = parts.findIndex((l) => /^(#\s*\w+|(unit|suite|apt)\b|\d)/i.test(l));
+  return (start > 0 ? parts.slice(start) : parts).join(', ').slice(0, 300);
+}
+
+export function withTyped(typed, parsed, ranked) {
+  if (!parsed.street || !ranked.length) return ranked;
+  const [best, ...rest] = ranked;
+  return [{ ...best, label: typed, address: typed, full: `Pin: ${best.label}`, typed: true }, ...rest].slice(0, MAX_RESULTS);
+}
 
 /** Best first: the right house number, then any building, streets, areas. */
 export function rankPlaces(list, parsed = {}) {
   const score = (p, i) => {
-    let s = KIND_RANK[p.kind] ?? 6;
+    let s = kindRank(p.kind);
     if (parsed.house && p.houseNumber && p.houseNumber.toLowerCase() !== parsed.house.toLowerCase()) s += 2.5;
     if (parsed.province && p.province && p.province !== parsed.province) s += 4;
     if (parsed.city && p.city && !p.city.toLowerCase().includes(parsed.city.toLowerCase().split(/\s+/)[0])) s += 1.5;
@@ -325,11 +353,14 @@ export function createGeocoder({ request, minIntervalMs = 1100, log = console })
       quietly('Photon'),
     );
 
-  const geolocator = (q, keys) =>
-    nrcanQueue(() => request(`${GEOLOCATOR}?${new URLSearchParams({ q, lang: 'en', keys })}`, { timeoutMs: 6000 })).then(
-      (list) => (Array.isArray(list) ? list.map(placeFromGeolocator) : []),
-      quietly('NRCan Geolocator'),
-    );
+  // The only source that places house numbers OpenStreetMap lacks: give it
+  // time, and a second try, before going without.
+  const geolocator = (q, keys) => {
+    const once = () => nrcanQueue(() => request(`${GEOLOCATOR}?${new URLSearchParams({ q, lang: 'en', keys })}`, { timeoutMs: 10_000 }));
+    return once()
+      .catch(() => new Promise((r) => setTimeout(r, 800)).then(once))
+      .then((list) => (Array.isArray(list) ? list.map(placeFromGeolocator) : []), quietly('NRCan Geolocator'));
+  };
 
   const reverse = (lat, lon) =>
     cached(`r:${lat.toFixed(5)},${lon.toFixed(5)}`, async () => {
@@ -365,8 +396,10 @@ export function createGeocoder({ request, minIntervalMs = 1100, log = console })
      */
     search(q) {
       const parsed = parseAddress(String(q || '').trim());
+      const typed = typedAddress(q);
       if (parsed.text.length < 3) return Promise.resolve([]);
-      return cached(`s:${parsed.text.toLowerCase()}`, async () => {
+      const key = `s:${parsed.text.toLowerCase()}`;
+      const found = cache.has(key) ? Promise.resolve(cache.get(key)) : (async () => {
         if (parsed.postalOnly) return rankPlaces(await postal(parsed), parsed);
 
         const fromPhoton = photon(parsed.plain);
@@ -383,8 +416,16 @@ export function createGeocoder({ request, minIntervalMs = 1100, log = console })
           if (!hasHouse() && parsed.city) places.push(...(await nominatim({ q: parsed.plain })));
         }
         if (parsed.postcode && !places.some((p) => p.precise)) places.push(...(await postal(parsed)));
-        return rankPlaces(places, parsed);
-      });
+        const ranked = rankPlaces(places, parsed);
+        // Remember only answers that found the house (or had none to find):
+        // a weaker one may just be a slow service, so ask again next time.
+        if (ranked.length && (!parsed.house || hasHouse())) {
+          cache.set(key, ranked);
+          if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+        }
+        return ranked;
+      })();
+      return found.then((ranked) => withTyped(typed, parsed, ranked));
     },
     /** Map point → nearest address (null when none). */
     reverse,
