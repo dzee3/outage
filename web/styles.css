@@ -576,3 +576,6 @@ body.tv .tv-feed {
 .maplibregl-popup-content { max-height: min(62vh, 560px); overflow-y: auto; }
 .source-via { color: var(--internet-text); }
 .item-pending { display: block; margin-top: 2px; font-size: 12px; color: var(--planned-text); }
+.item-gap { display: block; margin-top: 2px; font-size: 12px; color: var(--planned-text); }
+.geo-gap { margin: 8px 0; padding: 8px 10px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--planned) 50%, transparent); font-size: 13px; }
+.geo-gap p { margin: 0 0 6px; color: var(--planned-text); }

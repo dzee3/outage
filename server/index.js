@@ -10,7 +10,7 @@ import { albertaSources, ALBERTA_UNMONITORED } from './sources/alberta.js';
 import { canadaSources, CANADA_UNMONITORED } from './sources/canada.js';
 import { iodaSource } from './sources/ioda.js';
 import { createTerritory } from './territory.js';
-import { createGeocoder, parseAddress, relocateSite } from './geocode.js';
+import { createGeocoder, parseAddress, relocateSite, GEO_CHECK } from './geocode.js';
 import { createIspLookup, watchedAsns, NBM_PAGE } from './isp.js';
 import { utilityById } from './utilities.js';
 import { demoSources, demoInternet } from './demo.js';
@@ -461,25 +461,33 @@ backfillTimer.unref();
 // Clients saved before the address search improved can sit on a town's
 // centre (or on top of another client). Once per site, move them to their
 // building; hand-placed pins are left alone. See relocateSite.
+const geoTried = new Map(); // site id → when a lookup last found nothing
 const geoTimer = setInterval(async () => {
-  if (config.demo) return;
+  // The mirror follows the owner's list; only the owner (or a lone site) fixes pins.
+  if (config.demo || mirror) return;
   const sites = store.listSites();
-  const site = sites.find((s) => !s.geoChecked && s.address && parseAddress(s.address).house);
+  const site = sites.find((s) => s.geoChecked !== GEO_CHECK && s.address && parseAddress(s.address).house && !(now() - (geoTried.get(s.id) || 0) < 3600_000));
   if (!site) return;
   try {
     const patch = await relocateSite(site, sites, geocoder);
-    store.updateSite(site.id, patch);
-    if (patch.lat) {
-      console.log(`[sites] moved ${site.name} to ${patch.label}`);
-      delete patch.label;
+    if (!patch) {
+      geoTried.set(site.id, now());
+      return;
+    }
+    const { label, ...fields } = patch;
+    store.updateSite(site.id, fields);
+    if (fields.lat) {
+      console.log(`[sites] moved ${site.name} to ${label}`);
       backfillTried.delete(site.id);
-      if (!patch.area) {
-        const place = await geocoder.reverse(patch.lat, patch.lon).catch(() => null);
+      if (!fields.area) {
+        const place = await geocoder.reverse(fields.lat, fields.lon).catch(() => null);
         if (place?.area) store.updateSite(site.id, { area: place.area });
       }
-      monitor.reassess();
-    }
+      utilityCache.clear();
+    } else if (fields.geoGap) console.log(`[sites] ${site.name}: pin is ${fields.geoGap.km} km from its address`);
+    monitor.reassess();
   } catch (error) {
+    geoTried.set(site.id, now());
     console.error('[sites] address check failed', error.message);
   }
 }, 20_000);

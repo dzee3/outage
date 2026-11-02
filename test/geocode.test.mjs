@@ -130,20 +130,51 @@ test('Photon results outside Canada are dropped; business names are kept in the 
   assert.equal(p.precise, true);
 });
 
-test('relocateSite moves clients left on a town centre or on another client, never hand-placed pins', async () => {
-  const { relocateSite } = await import('../server/geocode.js');
+test('relocateSite moves clients left on a town centre or on another client; flags far hand-placed pins', async () => {
+  const { relocateSite, GEO_CHECK } = await import('../server/geocode.js');
   const airdrie = { lat: 51.28597, lon: -114.01062, precise: false, kind: 'city', city: 'Airdrie', province: 'AB' };
   const building = { lat: 51.2608, lon: -113.99736, precise: true, kind: 'address', houseNumber: '541', city: 'Airdrie', province: 'AB', area: 'Kingsview Industrial Park', label: '541 Kingsview Way SE, Airdrie' };
-  const geocoder = { search: async (q) => (/^541/.test(q) ? [building] : /^Airdrie/.test(q) ? [airdrie] : []) };
+  const geocoder = {
+    search: async (q) => (/^541/.test(q) ? [building] : []),
+    townPoint: async (city) => (city === 'Airdrie' ? airdrie : null),
+  };
   const marex = { id: 'm', address: '541 Kingsview Way SE #102, Airdrie, AB T4A 0C9', city: 'Airdrie', lat: 51.28597, lon: -114.01062 };
   const dhc = { id: 'd', address: '108 Edmonton Trail NE #4, Airdrie, AB', city: 'Airdrie', lat: 51.28597, lon: -114.01062 };
   const moved = await relocateSite(marex, [marex, dhc], geocoder);
-  assert.deepEqual([moved.lat, moved.lon, moved.area, moved.geoChecked], [51.2608, -113.99736, 'Kingsview Industrial Park', true]);
+  assert.deepEqual([moved.lat, moved.lon, moved.area, moved.geoChecked], [51.2608, -113.99736, 'Kingsview Industrial Park', GEO_CHECK]);
   // On the town centre, alone: still moved.
   assert.equal((await relocateSite(marex, [marex], geocoder)).lat, 51.2608);
-  // Placed by hand somewhere else: left alone, but marked checked.
+  // Placed by hand 2.9 km away: left alone, the gap recorded for the dashboard.
   const hand = { ...marex, lat: 51.27, lon: -114.03 };
-  assert.deepEqual(await relocateSite(hand, [hand], geocoder), { geoChecked: true });
+  const r = await relocateSite(hand, [hand], geocoder);
+  assert.equal(r.lat, undefined);
+  assert.deepEqual([r.geoChecked, r.geoGap.km, r.geoGap.lat], [GEO_CHECK, 2.5, 51.2608]);
   // Already at the building.
-  assert.deepEqual(await relocateSite({ ...marex, lat: 51.2609, lon: -113.9973 }, [], geocoder), { geoChecked: true });
+  assert.deepEqual(await relocateSite({ ...marex, lat: 51.2609, lon: -113.9973 }, [], geocoder), { geoChecked: GEO_CHECK, geoGap: null });
+  // Nothing found at all (a service hiccup): try again later.
+  assert.equal(await relocateSite({ ...marex, address: '9 Nowhere Rd, Airdrie' }, [], geocoder), null);
+});
+
+test('relocateSite: Calgary Waldorf, on the Calgary centre point, while "Calgary, AB" searches find landmarks', async () => {
+  const { relocateSite } = await import('../server/geocode.js');
+  // What the office's live lookups returned on Nov 2, 2026.
+  const estimated = { label: '515 Cougar Ridge Drive Southwest, Calgary, Alberta, AB', lat: 51.07269395, lon: -114.219471475, precise: true, kind: 'estimated', houseNumber: '515', city: null, province: 'AB' };
+  const geocoder = {
+    search: async (q) => (/^515 Cougar/.test(q) ? [estimated] : [{ label: 'University of Calgary', lat: 51.075054, lon: -114.138805, precise: true, kind: 'address' }]),
+    townPoint: async (city) => (city === 'Calgary' ? { lat: 51.0456064, lon: -114.057541, precise: false, kind: 'city' } : null),
+  };
+  const waldorf = { id: 'w', address: '515 Cougar Ridge Dr SW, Calgary, AB T3H 5G9', city: 'Calgary', area: 'Downtown Commercial Core', lat: 51.045606, lon: -114.057541 };
+  const r = await relocateSite(waldorf, [waldorf], geocoder);
+  assert.deepEqual([r.lat, r.lon, r.city, r.area], [51.07269395, -114.219471475, 'Calgary', '']);
+});
+
+test('store: moving a pin by hand clears its gap; geoChecked keeps its version', async () => {
+  const { validateSite } = await import('../server/store.js');
+  const base = validateSite({ name: 'W', lat: 51, lon: -114, geoChecked: 2, geoGap: { km: 11.3, lat: 51.07, lon: -114.2, label: 'x' } });
+  assert.equal(base.geoChecked, 2);
+  assert.equal(base.geoGap.km, 11.3);
+  assert.equal(validateSite({ notes: 'n' }, base).geoGap.km, 11.3, 'an unrelated edit keeps it');
+  assert.equal(validateSite({ lat: 51, lon: -114 }, base).geoGap.km, 11.3, 'the same point resent keeps it');
+  assert.equal('geoGap' in validateSite({ lat: 51.07, lon: -114.2 }, base), false, 'a moved pin drops it');
+  assert.equal('geoGap' in validateSite({ geoGap: null }, base), false);
 });

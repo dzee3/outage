@@ -847,6 +847,10 @@ function sitePopup(s) {
     h('span', { class: `status status-${impact.status}`, text: SITE_STATUS_TEXT[impact.status] }),
     h('h4', { text: s.name }),
     s.address ? h('div', { class: 'item-meta', text: s.address }) : null,
+    s.geoGap ? h('div', { class: 'geo-gap' },
+      h('p', { text: `The pin is ${s.geoGap.km} km from where this address is (${s.geoGap.label}).` }),
+      h('button', { class: 'btn', type: 'button', text: 'Move pin to the address', onclick: () => movePinToAddress(s) }),
+    ) : null,
     h('dl', { style: 'margin-top:8px' },
       h('dt', { text: 'Power' }), h('dd', { text: u ? `${u.name}${u.monitored ? '' : ' (not monitored)'}` : 'unknown' }),
       h('dt', { text: 'Internet' }), h('dd', { text: s.isp ? `${s.isp}${s.ispNetwork ? ` on the ${s.ispNetwork === 'telus' ? 'Telus' : 'Shaw'} line` : ''}` : 'not set' }),
@@ -858,6 +862,24 @@ function sitePopup(s) {
     s.notes ? h('p', { text: s.notes }) : null,
     h('div', { class: 'pop-actions' }, h('button', { class: 'btn', type: 'button', text: 'Edit client', onclick: () => openSitePanel(s) })),
   );
+}
+
+/** One click: put a client on the building its address finds. */
+async function movePinToAddress(s) {
+  const g = s.geoGap;
+  if (!g) return;
+  try {
+    const info = await fetch(`/api/lookup?lat=${g.lat}&lon=${g.lon}`).then((r) => r.json()).catch(() => ({}));
+    await api('PUT', `/api/sites/${s.id}`, JSON.stringify({
+      lat: g.lat, lon: g.lon, geoGap: null,
+      city: info.address?.city || s.city || '', area: info.address?.area || '',
+    }));
+    toast('Pin moved', `${s.name} is now at ${g.label}`);
+    await refresh();
+    selectSite(s.id);
+  } catch (error) {
+    toast('Could not move the pin', error.message);
+  }
 }
 
 function boundsOf(polygons) {
@@ -1106,6 +1128,7 @@ function renderSiteList() {
         h('span', {},
           h('span', { class: 'item-title' }, s.impact.province ? h('span', { class: 'prov-tag', text: s.impact.province }) : null, s.name),
           h('span', { class: 'item-meta', text: siteMeta(s) }),
+          s.geoGap ? h('span', { class: 'item-gap', text: `Pin is ${s.geoGap.km} km from its address` }) : null,
           s.pending ? h('span', { class: 'item-pending', text: state.snap.peer?.connected ? `Saving to ${state.snap.peer.peerName || 'the other site'}…` : `Waiting for ${state.snap.peer?.peerName || 'the other site'}; kept until it is back` }) : null,
         ),
         h('span', {}, h('span', { class: `status status-${s.impact.status}`, text: SITE_STATUS_TEXT[s.impact.status] })),

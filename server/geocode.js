@@ -388,30 +388,51 @@ export function createGeocoder({ request, minIntervalMs = 1100, log = console })
     },
     /** Map point → nearest address (null when none). */
     reverse,
+    /**
+     * A town's own point: where a search that only matched the town would
+     * have put a pin. Asked of Nominatim as a town, so landmarks and
+     * businesses with the town in their name never answer.
+     */
+    townPoint(city, province) {
+      const name = String(city || '').trim();
+      if (!name) return Promise.resolve(null);
+      const state = PROVINCE_NAMES[provinceCode(province) || ''] || undefined;
+      return cached(`t:${name.toLowerCase()}|${state || ''}`, async () => {
+        const list = await nominatim({ city: name, ...(state ? { state } : {}), country: 'Canada', limit: '3' });
+        return list.find((p) => !p.precise && Number.isFinite(p.lat)) || null;
+      });
+    },
   };
 }
 
+/** Version of the address re-check; clients checked by an older rule are checked again. */
+export const GEO_CHECK = 2;
+
 /**
- * A client saved on its town's centre (the old search often matched only the
- * town) or exactly on another client → {geoChecked, lat, lon, city, area,
- * label} for its building. Otherwise just {geoChecked: true}: a pin someone
- * placed by hand, even far from the address, is never moved.
+ * Where a client's address really is, against where its pin sits.
+ *   - On the town's own point (the old search often matched only the town)
+ *     or exactly on another client: move it to the building.
+ *   - Elsewhere but more than 1 km from the building: leave it (it may have
+ *     been placed by hand), and record the gap so the dashboard can offer to
+ *     move it.
+ * Returns the fields to save, or null when the lookup found nothing (a
+ * service hiccup: try again later).
  */
 export async function relocateSite(site, sites, geocoder) {
-  const done = { geoChecked: true };
+  const done = { geoChecked: GEO_CHECK, geoGap: null };
   const house = parseAddress(site.address).house?.toLowerCase();
   if (!house) return done;
-  const best = (await geocoder.search(site.address)).find(
-    (p) => p.precise && (!p.houseNumber || p.houseNumber.toLowerCase() === house),
-  );
-  if (!best || distanceKm(best, site) <= 0.3) return done;
+  const found = await geocoder.search(site.address);
+  if (!found.length) return null;
+  const best = found.find((p) => p.precise && (!p.houseNumber || p.houseNumber.toLowerCase() === house));
+  if (!best) return done;
+  const gap = distanceKm(best, site);
+  if (gap <= 0.3) return done;
   const sharesPoint = sites.some((o) => o.id !== site.id && o.lat === site.lat && o.lon === site.lon);
-  let onTownCentre = false;
-  const town = site.city || best.city;
-  if (!sharesPoint && town) {
-    const [hit] = await geocoder.search(`${town}${best.province ? `, ${best.province}` : ''}`);
-    onTownCentre = Boolean(hit && !hit.precise && distanceKm(hit, site) < 0.5);
-  }
-  if (!sharesPoint && !onTownCentre) return done;
-  return { ...done, lat: best.lat, lon: best.lon, city: best.city || site.city || '', area: best.area || '', label: best.label };
+  const town = sharesPoint ? null : await geocoder.townPoint?.(site.city || best.city, best.province);
+  const onTownCentre = Boolean(town && distanceKm(town, site) < 0.5);
+  if (sharesPoint || onTownCentre)
+    return { ...done, lat: best.lat, lon: best.lon, city: best.city || site.city || '', area: best.area || '', label: best.label };
+  if (gap > 1) return { ...done, geoGap: { km: Math.round(gap * 10) / 10, lat: best.lat, lon: best.lon, label: best.label } };
+  return done;
 }

@@ -76,7 +76,14 @@ export function validateSite(input, existing = {}) {
     site.ispNetwork = ['telus', 'rogers'].includes(input.ispNetwork) ? input.ispNetwork : '';
   }
   // Set once the address has been re-checked against the geocoders.
-  if ('geoChecked' in input) site.geoChecked = Boolean(input.geoChecked);
+  if ('geoChecked' in input) site.geoChecked = Number.isInteger(input.geoChecked) && input.geoChecked > 0 ? input.geoChecked : Boolean(input.geoChecked);
+  // Where the address finds the building, when the pin is more than 1 km away.
+  if ('geoGap' in input) {
+    const g = input.geoGap;
+    site.geoGap = g && Number.isFinite(g.lat) && Number.isFinite(g.lon) && Number.isFinite(g.km)
+      ? { km: g.km, lat: g.lat, lon: g.lon, label: clean(g.label, 200) }
+      : null;
+  }
   if ('radiusKm' in input && input.radiusKm !== '' && input.radiusKm != null) {
     const r = Number(input.radiusKm);
     if (!Number.isFinite(r) || r < 0.2 || r > 50)
@@ -84,6 +91,11 @@ export function validateSite(input, existing = {}) {
     site.radiusKm = r;
   }
   for (const key of ['address', 'notes', 'utility', 'isp', 'city', 'area', 'monitorHost', 'ispNetwork']) if (site[key] === '') delete site[key];
+  // A pin moved by hand is where the client is: no gap to point out.
+  if (('lat' in input || 'lon' in input) && existing.lat != null && !('geoGap' in input) &&
+      (Math.abs(Number(input.lat ?? site.lat) - existing.lat) > 1e-6 || Math.abs(Number(input.lon ?? site.lon) - existing.lon) > 1e-6))
+    site.geoGap = null;
+  if (site.geoGap === null) delete site.geoGap;
   site.lat = Math.round(site.lat * 1e6) / 1e6;
   site.lon = Math.round(site.lon * 1e6) / 1e6;
   return site;
